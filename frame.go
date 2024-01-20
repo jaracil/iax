@@ -220,8 +220,15 @@ type MiniFrame struct {
 
 type Frame interface {
 	Encode() []byte
+	SetSrcCallNumber(uint16)
 	SrcCallNumber() uint16
+	SetDstCallNumber(uint16)
 	DstCallNumber() uint16
+	SetOSeqNo(uint8)
+	OSeqNo() uint8
+	SetISeqNo(uint8)
+	ISeqNo() uint8
+	SetTimestamp(uint32)
 	Timestamp() uint32
 	Payload() []byte
 	IsFullFrame() bool
@@ -236,11 +243,42 @@ func NewMiniFrame(sourceCallNumber uint16, timestamp uint32, payload []byte) *Mi
 	}
 }
 
+// SetSrcCallNumber sets the source call number of the MiniFrame
+func (f *MiniFrame) SetSrcCallNumber(sourceCallNumber uint16) {
+	f.sourceCallNumber = sourceCallNumber
+}
+
+// srcCallNumber returns the source call number of the MiniFrame
 func (f *MiniFrame) SrcCallNumber() uint16 {
 	return f.sourceCallNumber
 }
 
+// SetDstCallNumber sets the destination call number of the MiniFrame
+func (f *MiniFrame) SetDstCallNumber(destCallNumber uint16) {
+	// MiniFrame has no destination call number
+}
+
 func (f *MiniFrame) DstCallNumber() uint16 {
+	return 0
+}
+
+// SetOSeqNo sets the OSeqno of the MiniFrame
+func (f *MiniFrame) SetOSeqNo(oSeqno uint8) {
+	// MiniFrame has no OSeqno
+}
+
+// OSeqNo returns the OSeqNo of the MiniFrame
+func (f *MiniFrame) OSeqNo() uint8 {
+	return 0
+}
+
+// SetISeqNo sets the ISeqno of the MiniFrame
+func (f *MiniFrame) SetISeqNo(iSeqno uint8) {
+	// MiniFrame has no ISeqno
+}
+
+// ISeqNo returns the ISeqNo of the MiniFrame
+func (f *MiniFrame) ISeqNo() uint8 {
 	return 0
 }
 
@@ -252,6 +290,11 @@ func (f *MiniFrame) IsFullFrame() bool {
 // Payload returns the payload of the MiniFrame
 func (f *MiniFrame) Payload() []byte {
 	return f.payload
+}
+
+// SetTimestamp sets the timestamp of the MiniFrame
+func (f *MiniFrame) SetTimestamp(timestamp uint32) {
+	f.timestamp = uint16(timestamp)
 }
 
 // Timestamp returns the timestamp of the MiniFrame
@@ -279,8 +322,8 @@ type FullFrame struct {
 	sourceCallNumber uint16
 	destCallNumber   uint16
 	timestamp        uint32
-	oSeqno           uint8
-	iSeqno           uint8
+	oSeqNo           uint8
+	iSeqNo           uint8
 	frameType        FrameType
 	subclass         Subclass
 	ies              []IEFrame
@@ -288,16 +331,10 @@ type FullFrame struct {
 }
 
 // NewFullFrame returns a new FullFrame
-func NewFullFrame(retransmit bool, sourceCallNumber uint16, destCallNumber uint16, timestamp uint32, oSeqno uint8, iSeqno uint8, frameType FrameType, subclass Subclass) *FullFrame {
+func NewFullFrame(frameType FrameType, subclass Subclass) *FullFrame {
 	return &FullFrame{
-		retransmit:       retransmit,
-		sourceCallNumber: sourceCallNumber,
-		destCallNumber:   destCallNumber,
-		timestamp:        timestamp,
-		oSeqno:           oSeqno,
-		iSeqno:           iSeqno,
-		frameType:        frameType,
-		subclass:         subclass,
+		frameType: frameType,
+		subclass:  subclass,
 	}
 }
 
@@ -346,9 +383,19 @@ func (f *FullFrame) Retransmit() bool {
 	return f.retransmit
 }
 
+// SetSrcCallNumber sets the source call number of the FullFrame
+func (f *FullFrame) SetSrcCallNumber(sourceCallNumber uint16) {
+	f.sourceCallNumber = sourceCallNumber
+}
+
 // SourceCallNumber returns the source call number of the FullFrame
 func (f *FullFrame) SrcCallNumber() uint16 {
 	return f.sourceCallNumber
+}
+
+// SetDstCallNumber sets the destination call number of the FullFrame
+func (f *FullFrame) SetDstCallNumber(destCallNumber uint16) {
+	f.destCallNumber = destCallNumber
 }
 
 // DestCallNumber returns the destination call number of the FullFrame
@@ -356,19 +403,34 @@ func (f *FullFrame) DstCallNumber() uint16 {
 	return f.destCallNumber
 }
 
+// SetTimestamp sets the timestamp of the FullFrame
+func (f *FullFrame) SetTimestamp(timestamp uint32) {
+	f.timestamp = timestamp
+}
+
 // Timestamp returns the timestamp of the FullFrame
 func (f *FullFrame) Timestamp() uint32 {
 	return f.timestamp
 }
 
-// OSeqno returns the OSeqno of the FullFrame
-func (f *FullFrame) OSeqno() uint8 {
-	return f.oSeqno
+// SetOSeqNo sets the OSeqno of the FullFrame
+func (f *FullFrame) SetOSeqNo(oSeqno uint8) {
+	f.oSeqNo = oSeqno
 }
 
-// ISeqno returns the ISeqno of the FullFrame
-func (f *FullFrame) ISeqno() uint8 {
-	return f.iSeqno
+// OSeqNo returns the OSeqNo of the FullFrame
+func (f *FullFrame) OSeqNo() uint8 {
+	return f.oSeqNo
+}
+
+// SetISeqNo sets the ISeqno of the FullFrame
+func (f *FullFrame) SetISeqNo(iSeqno uint8) {
+	f.iSeqNo = iSeqno
+}
+
+// ISeqNo returns the ISeqNo of the FullFrame
+func (f *FullFrame) ISeqNo() uint8 {
+	return f.iSeqNo
 }
 
 // FrameType returns the FrameType of the FullFrame
@@ -397,8 +459,8 @@ func (f *FullFrame) Encode() []byte {
 		binary.BigEndian.PutUint16(frame[2:], f.destCallNumber&0x7fff)
 	}
 	binary.BigEndian.PutUint32(frame[4:], f.timestamp)
-	frame[8] = f.oSeqno
-	frame[9] = f.iSeqno
+	frame[8] = f.oSeqNo
+	frame[9] = f.iSeqNo
 	frame[10] = byte(f.frameType)
 	frame[11] = byte(f.subclass)
 
@@ -441,8 +503,8 @@ func DecodeFrame(frame []byte) (Frame, error) {
 		frm.sourceCallNumber = binary.BigEndian.Uint16(frame[0:]) & 0x7fff
 		frm.destCallNumber = binary.BigEndian.Uint16(frame[2:]) & 0x7fff
 		frm.timestamp = binary.BigEndian.Uint32(frame[4:])
-		frm.oSeqno = frame[8]
-		frm.iSeqno = frame[9]
+		frm.oSeqNo = frame[8]
+		frm.iSeqNo = frame[9]
 		frm.frameType = FrameType(frame[10])
 		frm.subclass = Subclass(frame[11])
 

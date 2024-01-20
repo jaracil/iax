@@ -25,26 +25,19 @@ type ClientOptions struct {
 	KeepAliveInterval time.Duration
 }
 
-type callKey struct {
-	isLocal bool
-	callID  uint16
-}
-
-type callEntry struct {
-	frameQueue chan Frame
-}
-
 type Client struct {
-	options     *ClientOptions
-	conn        *net.UDPConn
-	sendQueue   chan Frame
-	lock        sync.RWMutex
-	state       ClientState
-	callIDCount uint16
-	callMap     map[callKey]*callEntry
+	options       *ClientOptions
+	conn          *net.UDPConn
+	sendQueue     chan Frame
+	lock          sync.RWMutex
+	state         ClientState
+	callIDCount   uint16
+	localCallMap  map[uint16]*Call
+	remoteCallMap map[uint16]*Call
 }
 
-func (c *Client) nextCallID() uint16 {
+// NewCall returns new Call
+func (c *Client) NewCall() *Call {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	for {
@@ -52,45 +45,34 @@ func (c *Client) nextCallID() uint16 {
 		if c.callIDCount > 0x7fff {
 			c.callIDCount = 1
 		}
-		key := callKey{isLocal: true, callID: c.callIDCount}
-		if _, ok := c.callMap[key]; !ok {
-			return c.callIDCount
+		if _, ok := c.localCallMap[c.callIDCount]; !ok {
+			call := &Call{client: c, frameQueue: make(chan Frame, 10), localCallID: c.callIDCount}
+			c.localCallMap[c.callIDCount] = call
+			return call
 		}
 	}
 }
 
-func (c *Client) addCallEntry(key callKey, entry *callEntry) {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	c.callMap[key] = entry
-}
-
-func (c *Client) removeCallEntry(key callKey) {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	delete(c.callMap, key)
-}
-
+// routeFrame routes a frame to the appropriate call
 func (c *Client) routeFrame(frame Frame) {
-	key := callKey{isLocal: false, callID: frame.SrcCallNumber()}
 	c.lock.RLock()
-	entry, ok := c.callMap[key]
+	call, ok := c.remoteCallMap[frame.SrcCallNumber()]
 	c.lock.RUnlock()
 	if ok {
-		entry.frameQueue <- frame
+		call.ProcessFrame(frame)
 		return
 	}
-	key = callKey{isLocal: true, callID: frame.DstCallNumber()}
 	c.lock.RLock()
-	entry, ok = c.callMap[key]
+	call, ok = c.localCallMap[frame.DstCallNumber()]
 	c.lock.RUnlock()
 	if ok {
-		entry.frameQueue <- frame
+		call.ProcessFrame(frame)
 		return
 	}
 	// Check for new incoming call
 }
 
+// sender sends frames to the server
 func (c *Client) sender() {
 	for c.state != Disconnected {
 		frm, ok := <-c.sendQueue
@@ -105,6 +87,7 @@ func (c *Client) sender() {
 	}
 }
 
+// receiver receives frames from the server
 func (c *Client) receiver() {
 	for c.state != Disconnected {
 		data := make([]byte, FrameMaxSize)
@@ -123,6 +106,7 @@ func (c *Client) receiver() {
 
 }
 
+// NewClient creates a new IAX2 client
 func NewClient(options *ClientOptions) *Client {
 	return &Client{
 		options: options,
@@ -130,16 +114,19 @@ func NewClient(options *ClientOptions) *Client {
 	}
 }
 
+// Connect connects to the server
 func (c *Client) Connect() error {
 	c.state = Connecting
 	c.sendQueue = make(chan Frame, 100)
-	c.callMap = make(map[callKey]*callEntry)
+	c.localCallMap = make(map[uint16]*Call)
+	c.remoteCallMap = make(map[uint16]*Call)
 
 	defer func() {
 		if c.state == Connecting {
 			c.Disconnect()
 		}
 	}()
+
 	if c.options.Port == 0 {
 		c.options.Port = 4569 // Default IAX port
 	}
@@ -167,6 +154,7 @@ func (c *Client) Connect() error {
 	return nil
 }
 
+// Disconnect disconnects from the server
 func (c *Client) Disconnect() {
 	if c.state == Connected || c.state == Connecting {
 		c.state = Disconnecting
@@ -186,6 +174,7 @@ func (c *Client) Disconnect() {
 	}
 }
 
+// SendFrame sends a frame to the server
 func (c *Client) SendFrame(frame Frame) {
 	if c.state != Disconnected {
 		c.sendQueue <- frame
