@@ -46,7 +46,7 @@ func (c *Client) NewCall() *Call {
 			c.callIDCount = 1
 		}
 		if _, ok := c.localCallMap[c.callIDCount]; !ok {
-			call := &Call{client: c, frameQueue: make(chan Frame, 10), localCallID: c.callIDCount}
+			call := &Call{client: c, frameQueue: make(chan Frame, 10), localCallID: c.callIDCount, firstFrame: true}
 			c.localCallMap[c.callIDCount] = call
 			return call
 		}
@@ -91,12 +91,12 @@ func (c *Client) sender() {
 func (c *Client) receiver() {
 	for c.state != Disconnected {
 		data := make([]byte, FrameMaxSize)
-		_, err := c.conn.Read(data)
+		n, err := c.conn.Read(data)
 		if err != nil {
 			break
 		}
 
-		frm, err := DecodeFrame(data)
+		frm, err := DecodeFrame(data[:n])
 		if err != nil {
 			// Log error
 			continue
