@@ -18,7 +18,7 @@ type Call struct {
 func (c *Call) ProcessFrame(frame Frame) {
 	if frame.IsFullFrame() {
 		if frame.OSeqNo() != c.iseqno {
-			// Debug("Call %d: Out of order frame received. Expected %d, got %d", c.localCallID, c.iseqno, frame.OSeqNo())
+			c.client.Log(Debug, "Call %d: Out of order frame received. Expected %d, got %d", c.localCallID, c.iseqno, frame.OSeqNo())
 			return
 		}
 		c.iseqno = frame.OSeqNo()

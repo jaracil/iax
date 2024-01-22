@@ -1,6 +1,7 @@
 package iax
 
 import (
+	"log"
 	"net"
 	"strconv"
 	"strings"
@@ -17,6 +18,18 @@ const (
 	Connecting
 )
 
+type LogLevel int
+
+const (
+	Disabled LogLevel = iota
+	Debug
+	Info
+	Warning
+	Error
+	Critical
+)
+
+// ClientOptions are the options for the client
 type ClientOptions struct {
 	Host              string
 	Port              int
@@ -25,6 +38,7 @@ type ClientOptions struct {
 	KeepAliveInterval time.Duration
 }
 
+// Client is an IAX2 client connection
 type Client struct {
 	options       *ClientOptions
 	conn          *net.UDPConn
@@ -34,6 +48,24 @@ type Client struct {
 	callIDCount   uint16
 	localCallMap  map[uint16]*Call
 	remoteCallMap map[uint16]*Call
+	logLevel      LogLevel
+}
+
+// SetLogLevel sets the client log level
+func (c *Client) SetLogLevel(level LogLevel) {
+	c.logLevel = level
+}
+
+// LogLevel returns the client log level
+func (c *Client) LogLevel() LogLevel {
+	return c.logLevel
+}
+
+// Log logs a message
+func (c *Client) Log(level LogLevel, format string, args ...interface{}) {
+	if c.logLevel != Disabled && level >= c.logLevel {
+		log.Printf(format, args...)
+	}
 }
 
 // NewCall returns new Call
