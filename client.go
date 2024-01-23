@@ -1,6 +1,8 @@
 package iax
 
 import (
+	"context"
+	"errors"
 	"log"
 	"net"
 	"strconv"
@@ -21,13 +23,36 @@ const (
 type LogLevel int
 
 const (
-	Disabled LogLevel = iota
-	Debug
-	Info
-	Warning
-	Error
-	Critical
+	DisabledLogLevel LogLevel = iota
+	UltraDebugLogLevel
+	DebugLogLevel
+	InfoLogLevel
+	WarningLogLevel
+	ErrorLogLevel
+	CriticalLogLevel
 )
+
+// String returns the string representation of the log level
+func (ll LogLevel) String() string {
+	switch ll {
+	case DisabledLogLevel:
+		return "Disabled"
+	case UltraDebugLogLevel:
+		return "UltraDebug"
+	case DebugLogLevel:
+		return "Debug"
+	case InfoLogLevel:
+		return "Info"
+	case WarningLogLevel:
+		return "Warning"
+	case ErrorLogLevel:
+		return "Error"
+	case CriticalLogLevel:
+		return "Critical"
+	default:
+		return "Unknown"
+	}
+}
 
 // ClientOptions are the options for the client
 type ClientOptions struct {
@@ -63,7 +88,7 @@ func (c *Client) LogLevel() LogLevel {
 
 // Log logs a message
 func (c *Client) Log(level LogLevel, format string, args ...interface{}) {
-	if c.logLevel != Disabled && level >= c.logLevel {
+	if c.logLevel != DisabledLogLevel && level >= c.logLevel {
 		log.Printf(format, args...)
 	}
 }
@@ -85,8 +110,39 @@ func (c *Client) NewCall() *Call {
 	}
 }
 
+func (c *Client) Register(ctx context.Context) error {
+	oFrm := NewFullFrame(FrmIAXCtl, IAXCtlRegReq)
+	oFrm.AddIE(StringIE(IEUsername, c.options.Username))
+	oFrm.AddIE(Uint16IE(IERefresh, uint16(c.options.KeepAliveInterval.Seconds())))
+
+	call := c.NewCall()
+	call.SendFrame(oFrm)
+
+	childCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	iFrm, err := call.WaitForFrame(childCtx)
+	if err != nil {
+		return err
+	}
+
+	if !iFrm.IsFullFrame() {
+		return ErrUnexpectedFrameType
+	}
+
+	fFrame := iFrm.(*FullFrame)
+	if fFrame.FrameType() != FrmIAXCtl {
+		return ErrUnexpectedFrameType
+	}
+
+	return errors.New("not implemented")
+
+}
+
 // routeFrame routes a frame to the appropriate call
 func (c *Client) routeFrame(frame Frame) {
+	if c.logLevel > DisabledLogLevel && c.logLevel <= UltraDebugLogLevel {
+		c.Log(UltraDebugLogLevel, "<  %s", frame)
+	}
 	c.lock.RLock()
 	call, ok := c.remoteCallMap[frame.SrcCallNumber()]
 	c.lock.RUnlock()
@@ -130,7 +186,7 @@ func (c *Client) receiver() {
 
 		frm, err := DecodeFrame(data[:n])
 		if err != nil {
-			// Log error
+			c.Log(ErrorLogLevel, "Error decoding frame: %s", err)
 			continue
 		}
 		c.routeFrame(frm)
@@ -163,7 +219,7 @@ func (c *Client) Connect() error {
 		c.options.Port = 4569 // Default IAX port
 	}
 
-	if strings.Contains(c.options.Host, ":") {
+	if !strings.Contains(c.options.Host, ":") {
 		c.options.Host = c.options.Host + ":" + strconv.Itoa(c.options.Port)
 	}
 
@@ -182,6 +238,11 @@ func (c *Client) Connect() error {
 
 	go c.sender()
 	go c.receiver()
+
+	err = c.Register(context.Background())
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -202,13 +263,15 @@ func (c *Client) Disconnect() {
 			c.conn.Close()
 			c.conn = nil
 		}
-
 	}
 }
 
 // SendFrame sends a frame to the server
 func (c *Client) SendFrame(frame Frame) {
 	if c.state != Disconnected {
+		if c.logLevel > DisabledLogLevel && c.logLevel <= UltraDebugLogLevel {
+			c.Log(UltraDebugLogLevel, ">  %s", frame)
+		}
 		c.sendQueue <- frame
 	}
 }

@@ -1,6 +1,7 @@
 package iax
 
 import (
+	"context"
 	"time"
 )
 
@@ -18,7 +19,7 @@ type Call struct {
 func (c *Call) ProcessFrame(frame Frame) {
 	if frame.IsFullFrame() {
 		if frame.OSeqNo() != c.iseqno {
-			c.client.Log(Debug, "Call %d: Out of order frame received. Expected %d, got %d", c.localCallID, c.iseqno, frame.OSeqNo())
+			c.client.Log(DebugLogLevel, "Call %d: Out of order frame received. Expected %d, got %d", c.localCallID, c.iseqno, frame.OSeqNo())
 			return
 		}
 		c.iseqno = frame.OSeqNo()
@@ -49,4 +50,13 @@ func (c *Call) SendFrame(frame Frame) {
 		frame.SetISeqNo(c.iseqno)
 	}
 	c.client.SendFrame(frame)
+}
+
+func (c *Call) WaitForFrame(ctx context.Context) (Frame, error) {
+	select {
+	case frame := <-c.frameQueue:
+		return frame, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }

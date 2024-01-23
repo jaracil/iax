@@ -2,7 +2,8 @@ package iax
 
 import (
 	"encoding/binary"
-	"errors"
+	"encoding/hex"
+	"fmt"
 )
 
 type FrameType uint8
@@ -11,11 +12,6 @@ type Subclass uint8
 
 const (
 	FrameMaxSize = 1024
-)
-
-// Errors
-var (
-	ErrInvalidFrame = errors.New("invalid frame")
 )
 
 // Frame types
@@ -32,7 +28,35 @@ const (
 	FrmConfortNoise FrameType = 0x0a
 )
 
-// IE types for IAXCtl frames
+// FrameTypeToString returns the string representation of the FrameType
+func (ft FrameType) String() string {
+	switch ft {
+	case FrmDTMF:
+		return "DTMF"
+	case FrmVoice:
+		return "Voice"
+	case FrmVideo:
+		return "Video"
+	case FrmControl:
+		return "Control"
+	case FrmNull:
+		return "Null"
+	case FrmIAXCtl:
+		return "IAXCtl"
+	case FrmText:
+		return "Text"
+	case FrmImage:
+		return "Image"
+	case FrmHTML:
+		return "HTML"
+	case FrmConfortNoise:
+		return "ConfortNoise"
+	default:
+		return fmt.Sprintf("Unknown(%d)", ft)
+	}
+}
+
+// IE types
 const (
 	IECalledNumber  IEType = 0x01
 	IECallingNumber IEType = 0x02
@@ -76,6 +100,95 @@ const (
 	IERRPackets     IEType = 0x30
 	IERRDelay       IEType = 0x31
 )
+
+func (ie IEType) String() string {
+	switch ie {
+	case IECalledNumber:
+		return "CalledNumber"
+	case IECallingNumber:
+		return "CallingNumber"
+	case IECallingAni:
+		return "CallingAni"
+	case IECallingName:
+		return "CallingName"
+	case IECalledContext:
+		return "CalledContext"
+	case IEUsername:
+		return "Username"
+	case IEPassword:
+		return "Password"
+	case IECapability:
+		return "Capability"
+	case IEFormat:
+		return "Format"
+	case IELanguage:
+		return "Language"
+	case IEVersion:
+		return "Version"
+	case IEADSICPE:
+		return "ADSICPE"
+	case IEDNID:
+		return "DNID"
+	case IEAuthMethods:
+		return "AuthMethods"
+	case IEChallenge:
+		return "Challenge"
+	case IEMD5Result:
+		return "MD5Result"
+	case IERSAResult:
+		return "RSAResult"
+	case IEApparentAddr:
+		return "ApparentAddr"
+	case IERefresh:
+		return "Refresh"
+	case IEDPStatus:
+		return "DPStatus"
+	case IECallNumber:
+		return "CallNumber"
+	case IECause:
+		return "Cause"
+	case IEIAXUnknown:
+		return "IAXUnknown"
+	case IEMsgCount:
+		return "MsgCount"
+	case IEAutoAnswer:
+		return "AutoAnswer"
+	case IEMusiconHold:
+		return "MusiconHold"
+	case IETransferID:
+		return "TransferID"
+	case IERDNIS:
+		return "RDNIS"
+	case IEDateTime:
+		return "DateTime"
+	case IECallingPres:
+		return "CallingPres"
+	case IECallingTON:
+		return "CallingTON"
+	case IECallingTNS:
+		return "CallingTNS"
+	case IESamplingRate:
+		return "SamplingRate"
+	case IECauseCode:
+		return "CauseCode"
+	case IEEncryption:
+		return "Encryption"
+	case IEEncKey:
+		return "EncKey"
+	case IECodecPrefs:
+		return "CodecPrefs"
+	case IERRJitter:
+		return "RRJitter"
+	case IERRLoss:
+		return "RRLoss"
+	case IERRPackets:
+		return "RRPackets"
+	case IERRDelay:
+		return "RRDelay"
+	default:
+		return fmt.Sprintf("Unknown(%d)", ie)
+	}
+}
 
 // Subclasses for IAXCtl frame
 const (
@@ -155,6 +268,161 @@ const (
 	CodecH264      Subclass = 0x95
 )
 
+// SubclassToString returns the string representation of the Subclass
+func SubclassToString(ft FrameType, sc Subclass) string {
+	switch ft {
+	case FrmIAXCtl:
+		switch sc {
+		case IAXCtlNew:
+			return "New"
+		case IAXCtlPing:
+			return "Ping"
+		case IAXCtlPong:
+			return "Pong"
+		case IAXCtlAck:
+			return "Ack"
+		case IAXCtlHangup:
+			return "Hangup"
+		case IAXCtlReject:
+			return "Reject"
+		case IAXCtlAccept:
+			return "Accept"
+		case IAXCtlAuthReq:
+			return "AuthReq"
+		case IAXCtlAuthRep:
+			return "AuthRep"
+		case IAXCtlInval:
+			return "Inval"
+		case IAXCtlLagRqst:
+			return "LagRqst"
+		case IAXCtlLagRply:
+			return "LagRply"
+		case IAXCtlRegReq:
+			return "RegReq"
+		case IAXCtlRegAuth:
+			return "RegAuth"
+		case IAXCtlRegAck:
+			return "RegAck"
+		case IAXCtlRegRej:
+			return "RegRej"
+		case IAXCtlRegRel:
+			return "RegRel"
+		case IAXCtlVnak:
+			return "Vnak"
+		case IAXCtlDpReq:
+			return "DpReq"
+		case IAXCtlDpRep:
+			return "DpRep"
+		case IAXCtlDial:
+			return "Dial"
+		case IAXCtlTxReq:
+			return "TxReq"
+		case IAXCtlTxCnt:
+			return "TxCnt"
+		case IAXCtlTxAcc:
+			return "TxAcc"
+		case IAXCtlTxReady:
+			return "TxReady"
+		case IAXCtlTxRel:
+			return "TxRel"
+		case IAXCtlTxRej:
+			return "TxRej"
+		case IAXCtlQuelch:
+			return "Quelch"
+		case IAXCtlUnquelch:
+			return "Unquelch"
+		case IAXCtlPoke:
+			return "Poke"
+		case IAXCtlMWI:
+			return "MWI"
+		case IAXCtlUnsupport:
+			return "Unsupport"
+		case IAXCtlTransfer:
+			return "Transfer"
+		default:
+			return fmt.Sprintf("Unknown(%d)", sc)
+		}
+	case FrmControl:
+		switch sc {
+		case CtlHangup:
+			return "Hangup"
+		case CtlRinging:
+			return "Ringing"
+		case CtlAnswer:
+			return "Answer"
+		case CtlBusy:
+			return "Busy"
+		case CtlCongest:
+			return "Congest"
+		case CtlFlash:
+			return "Flash"
+		case CtlOption:
+			return "Option"
+		case CtlKey:
+			return "Key"
+		case CtlUnkey:
+			return "Unkey"
+		case CtlProgress:
+			return "Progress"
+		case CtlProceeding:
+			return "Proceeding"
+		case CtlHold:
+			return "Hold"
+		case CtlUnhold:
+			return "Unhold"
+		default:
+			return fmt.Sprintf("Unknown(%d)", sc)
+		}
+	case FrmVoice:
+		switch sc {
+		case CodecG723:
+			return "G723"
+		case CodecGSM:
+			return "GSM"
+		case CodecULAW:
+			return "ULAW"
+		case CodecALAW:
+			return "ALAW"
+		case CodecG726:
+			return "G726"
+		case CodecIMA:
+			return "IMA"
+		case CodecSlinear16:
+			return "Slinear16"
+		case CodecLPC10:
+			return "LPC10"
+		case CodecG729:
+			return "G729"
+		case CodecSpeex:
+			return "Speex"
+		case CodecILBC:
+			return "ILBC"
+		case CodecG726AAL2:
+			return "G726AAL2"
+		case CodecG722:
+			return "G722"
+		case CodecAMR:
+			return "AMR"
+		case CodecJPEG:
+			return "JPEG"
+		case CodecPNG:
+			return "PNG"
+		case CodecH261:
+			return "H261"
+		case CodecH263:
+			return "H263"
+		case CodecH263P:
+			return "H263P"
+		case CodecH264:
+			return "H264"
+		default:
+			return fmt.Sprintf("Unknown(%d)", sc)
+		}
+	default:
+		return fmt.Sprintf("Unknown(%d)", sc)
+	}
+}
+
 // Information Element Frame
 type IEFrame struct {
 	ie   IEType
@@ -186,6 +454,11 @@ func BytesIE(ie IEType, data []byte) *IEFrame {
 	return &IEFrame{ie, data}
 }
 
+// IE returns the IE of the IEFrame
+func (ief *IEFrame) IE() IEType {
+	return ief.ie
+}
+
 // AsUint32 returns the IE data as uint32
 func (ief *IEFrame) AsUint32() uint32 {
 	return uint32(ief.data[0])<<24 | uint32(ief.data[1])<<16 | uint32(ief.data[2])<<8 | uint32(ief.data[3])
@@ -211,13 +484,7 @@ func (ief *IEFrame) AsBytes() []byte {
 	return ief.data
 }
 
-// MiniFrame represents a mini IAX frame
-type MiniFrame struct {
-	sourceCallNumber uint16
-	timestamp        uint16
-	payload          []byte
-}
-
+// Frame represents an IAX frame
 type Frame interface {
 	Encode() []byte
 	SetSrcCallNumber(uint16)
@@ -232,6 +499,14 @@ type Frame interface {
 	Timestamp() uint32
 	Payload() []byte
 	IsFullFrame() bool
+	String() string
+}
+
+// MiniFrame represents a mini IAX frame
+type MiniFrame struct {
+	sourceCallNumber uint16
+	timestamp        uint16
+	payload          []byte
 }
 
 // NewMiniFrame returns a new MiniFrame
@@ -241,6 +516,14 @@ func NewMiniFrame(sourceCallNumber uint16, timestamp uint32, payload []byte) *Mi
 		timestamp:        uint16(timestamp),
 		payload:          payload,
 	}
+}
+
+func (f *MiniFrame) String() string {
+	res := fmt.Sprintf("MiniFrame: SrcCallNumber=%d, Timestamp=%d\n", f.SrcCallNumber(), f.Timestamp())
+	if len(f.Payload()) > 0 {
+		res += fmt.Sprintf("Payload:\n%s", hex.Dump(f.Payload()))
+	}
+	return res
 }
 
 // SetSrcCallNumber sets the source call number of the MiniFrame
@@ -326,7 +609,7 @@ type FullFrame struct {
 	iSeqNo           uint8
 	frameType        FrameType
 	subclass         Subclass
-	ies              []IEFrame
+	ies              []*IEFrame
 	payload          []byte
 }
 
@@ -338,14 +621,26 @@ func NewFullFrame(frameType FrameType, subclass Subclass) *FullFrame {
 	}
 }
 
+func (f *FullFrame) String() string {
+	res := fmt.Sprintf("FullFrame: SrcCallNumber=%d, DstCallNumber=%d, Timestamp=%d, OSeqNo=%d, ISeqNo=%d, FrameType=%s, Subclass=%s\n", f.sourceCallNumber, f.destCallNumber, f.timestamp, f.oSeqNo, f.iSeqNo, f.frameType.String(), SubclassToString(f.FrameType(), f.Subclass()))
+
+	for _, ie := range f.IEs() {
+		res += fmt.Sprintf("IE(%s):\n%s", ie.IE().String(), hex.Dump(ie.AsBytes()))
+	}
+	if len(f.Payload()) > 0 {
+		res += fmt.Sprintf("Payload:\n%s", hex.Dump(f.Payload()))
+	}
+	return res
+}
+
 // IsFullFrame returns true for FullFrame
 func (f *FullFrame) IsFullFrame() bool {
 	return true
 }
 
 // AddIE adds an IE to the FullFrame
-func (f *FullFrame) AddIE(ie IEType, data []byte) {
-	f.ies = append(f.ies, IEFrame{ie, data})
+func (f *FullFrame) AddIE(ie *IEFrame) {
+	f.ies = append(f.ies, ie)
 }
 
 // SetPayload sets the payload of the FullFrame
@@ -359,7 +654,7 @@ func (f *FullFrame) Payload() []byte {
 }
 
 // IEs returns the IEs of the FullFrame
-func (f *FullFrame) IEs() []IEFrame {
+func (f *FullFrame) IEs() []*IEFrame {
 	return f.ies
 }
 
@@ -367,7 +662,7 @@ func (f *FullFrame) IEs() []IEFrame {
 func (f *FullFrame) FindIE(ie IEType) *IEFrame {
 	for _, ief := range f.ies {
 		if ief.ie == ie {
-			return &ief
+			return ief
 		}
 	}
 	return nil
@@ -516,7 +811,7 @@ func DecodeFrame(frame []byte) (Frame, error) {
 				if frmIdx+ieDataLen+2 > len(frame) {
 					break
 				}
-				ie := IEFrame{IEType(frame[frmIdx]), frame[frmIdx+2 : frmIdx+2+ieDataLen]}
+				ie := &IEFrame{IEType(frame[frmIdx]), frame[frmIdx+2 : frmIdx+2+ieDataLen]}
 				frm.ies = append(frm.ies, ie)
 				frmIdx += ieDataLen + 2
 			}
