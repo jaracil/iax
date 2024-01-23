@@ -622,7 +622,7 @@ func NewFullFrame(frameType FrameType, subclass Subclass) *FullFrame {
 }
 
 func (f *FullFrame) String() string {
-	res := fmt.Sprintf("FullFrame: SrcCallNumber=%d, DstCallNumber=%d, Timestamp=%d, OSeqNo=%d, ISeqNo=%d, FrameType=%s, Subclass=%s\n", f.sourceCallNumber, f.destCallNumber, f.timestamp, f.oSeqNo, f.iSeqNo, f.frameType.String(), SubclassToString(f.FrameType(), f.Subclass()))
+	res := fmt.Sprintf("FullFrame: Retry=%t, SrcCallNumber=%d, DstCallNumber=%d, Timestamp=%d, OSeqNo=%d, ISeqNo=%d, FrameType=%s, Subclass=%s\n", f.retransmit, f.sourceCallNumber, f.destCallNumber, f.timestamp, f.oSeqNo, f.iSeqNo, f.frameType.String(), SubclassToString(f.FrameType(), f.Subclass()))
 
 	for _, ie := range f.IEs() {
 		res += fmt.Sprintf("IE(%s):\n%s", ie.IE().String(), hex.Dump(ie.AsBytes()))

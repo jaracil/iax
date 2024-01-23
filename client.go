@@ -103,7 +103,13 @@ func (c *Client) NewCall() *Call {
 			c.callIDCount = 1
 		}
 		if _, ok := c.localCallMap[c.callIDCount]; !ok {
-			call := &Call{client: c, frameQueue: make(chan Frame, 10), localCallID: c.callIDCount, firstFrame: true}
+			call := &Call{
+				client:         c,
+				fullFrameQueue: make(chan *FullFrame, 10),
+				miniFrameQueue: make(chan *MiniFrame, 10),
+				localCallID:    c.callIDCount,
+				isFirstFrame:   true,
+			}
 			c.localCallMap[c.callIDCount] = call
 			return call
 		}
@@ -116,26 +122,17 @@ func (c *Client) Register(ctx context.Context) error {
 	oFrm.AddIE(Uint16IE(IERefresh, uint16(c.options.KeepAliveInterval.Seconds())))
 
 	call := c.NewCall()
-	call.SendFrame(oFrm)
+	rFrm, err := call.SendFullFrame(ctx, oFrm)
 
-	childCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	iFrm, err := call.WaitForFrame(childCtx)
 	if err != nil {
 		return err
 	}
 
-	if !iFrm.IsFullFrame() {
-		return ErrUnexpectedFrameType
-	}
-
-	fFrame := iFrm.(*FullFrame)
-	if fFrame.FrameType() != FrmIAXCtl {
+	if rFrm.FrameType() != FrmIAXCtl {
 		return ErrUnexpectedFrameType
 	}
 
 	return errors.New("not implemented")
-
 }
 
 // routeFrame routes a frame to the appropriate call
@@ -203,7 +200,7 @@ func NewClient(options *ClientOptions) *Client {
 }
 
 // Connect connects to the server
-func (c *Client) Connect() error {
+func (c *Client) Connect(ctx context.Context) error {
 	c.state = Connecting
 	c.sendQueue = make(chan Frame, 100)
 	c.localCallMap = make(map[uint16]*Call)
@@ -239,7 +236,7 @@ func (c *Client) Connect() error {
 	go c.sender()
 	go c.receiver()
 
-	err = c.Register(context.Background())
+	err = c.Register(ctx)
 	if err != nil {
 		return err
 	}
