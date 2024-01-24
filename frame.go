@@ -780,6 +780,41 @@ func IsFullFrame(frame []byte) bool {
 	return frame[0]&0x80 == 0x80
 }
 
+// Check if frame is a response to a previous frame
+func (f *FullFrame) IsResponse() bool {
+	switch f.frameType {
+	case FrmIAXCtl:
+		switch f.subclass {
+		case IAXCtlRegAck, IAXCtlRegRej, IAXCtlRegAuth, IAXCtlPong:
+			return true
+		}
+	}
+	return false
+}
+
+// Check if frame needs an ACK
+func (f *FullFrame) NeedACK() bool {
+	switch f.frameType {
+	case FrmIAXCtl:
+		switch f.subclass {
+		case IAXCtlNew, IAXCtlRegAck, IAXCtlRegRej, IAXCtlRegRel, IAXCtlPong, IAXCtlAccept, IAXCtlReject, IAXCtlHangup, IAXCtlAuthRep, IAXCtlTxRel:
+			return true
+		}
+	}
+	return false
+}
+
+func (f *FullFrame) NeedResponse() bool {
+	switch f.frameType {
+	case FrmIAXCtl:
+		switch f.subclass {
+		case IAXCtlRegReq, IAXCtlPing, IAXCtlPoke:
+			return true
+		}
+	}
+	return false
+}
+
 // DecodeFrame decodes a byte slice to a FullFrame
 func DecodeFrame(frame []byte) (Frame, error) {
 

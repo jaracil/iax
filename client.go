@@ -2,6 +2,8 @@ package iax
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"errors"
 	"log"
 	"net"
@@ -105,7 +107,7 @@ func (c *Client) NewCall() *Call {
 		if _, ok := c.localCallMap[c.callIDCount]; !ok {
 			call := &Call{
 				client:         c,
-				fullFrameQueue: make(chan *FullFrame, 10),
+				respQueue:      make(chan *FullFrame, 1),
 				miniFrameQueue: make(chan *MiniFrame, 10),
 				localCallID:    c.callIDCount,
 				isFirstFrame:   true,
@@ -117,11 +119,13 @@ func (c *Client) NewCall() *Call {
 }
 
 func (c *Client) Register(ctx context.Context) error {
+
+	call := c.NewCall()
+
 	oFrm := NewFullFrame(FrmIAXCtl, IAXCtlRegReq)
 	oFrm.AddIE(StringIE(IEUsername, c.options.Username))
 	oFrm.AddIE(Uint16IE(IERefresh, uint16(c.options.KeepAliveInterval.Seconds())))
 
-	call := c.NewCall()
 	rFrm, err := call.SendFullFrame(ctx, oFrm)
 
 	if err != nil {
@@ -132,13 +136,57 @@ func (c *Client) Register(ctx context.Context) error {
 		return ErrUnexpectedFrameType
 	}
 
+	if rFrm.Subclass() == IAXCtlRegAck {
+		return nil
+	}
+
+	if rFrm.Subclass() == IAXCtlRegAuth {
+		ie := rFrm.FindIE(IEAuthMethods)
+		if ie == nil {
+			return ErrMissingIE
+		}
+		if ie.AsUint16()&0x0002 == 0 {
+			return ErrUnsupportedAuthMethod
+		}
+		ie = rFrm.FindIE(IEChallenge)
+		if ie == nil {
+			return ErrMissingIE
+		}
+		challenge := ie.AsString()
+		md5Digest := md5.Sum([]byte(challenge + c.options.Password))
+		challengeResponse := hex.EncodeToString(md5Digest[:])
+
+		c.Log(DebugLogLevel, "Challenge: %s", challenge)
+
+		oFrm = NewFullFrame(FrmIAXCtl, IAXCtlRegReq)
+		oFrm.AddIE(StringIE(IEUsername, c.options.Username))
+		oFrm.AddIE(Uint16IE(IERefresh, uint16(c.options.KeepAliveInterval.Seconds())))
+		oFrm.AddIE(StringIE(IEMD5Result, challengeResponse))
+		rFrm, err = call.SendFullFrame(ctx, oFrm)
+		if err != nil {
+			return err
+		}
+
+		if rFrm.FrameType() != FrmIAXCtl {
+			return ErrUnexpectedFrameType
+		}
+
+		if rFrm.Subclass() == IAXCtlRegAck {
+			return nil
+		}
+
+		if rFrm.Subclass() == IAXCtlRegRej {
+			return ErrConnectionRejected
+		}
+	}
+
 	return errors.New("not implemented")
 }
 
 // routeFrame routes a frame to the appropriate call
 func (c *Client) routeFrame(frame Frame) {
 	if c.logLevel > DisabledLogLevel && c.logLevel <= UltraDebugLogLevel {
-		c.Log(UltraDebugLogLevel, "<  %s", frame)
+		c.Log(UltraDebugLogLevel, "RX %s", frame)
 	}
 	c.lock.RLock()
 	call, ok := c.remoteCallMap[frame.SrcCallNumber()]
@@ -154,7 +202,18 @@ func (c *Client) routeFrame(frame Frame) {
 		call.ProcessFrame(frame)
 		return
 	}
-	// Check for new incoming call
+	if frame.IsFullFrame() {
+		ffrm := frame.(*FullFrame)
+		if ffrm.DstCallNumber() != 0 {
+			oFrm := NewFullFrame(FrmIAXCtl, IAXCtlInval)
+			oFrm.SetTimestamp(ffrm.Timestamp())
+			oFrm.SetSrcCallNumber(ffrm.DstCallNumber())
+			oFrm.SetDstCallNumber(ffrm.SrcCallNumber())
+			oFrm.SetISeqNo(ffrm.OSeqNo())
+			oFrm.SetOSeqNo(ffrm.ISeqNo())
+			c.SendFrame(oFrm)
+		}
+	}
 }
 
 // sender sends frames to the server
@@ -267,7 +326,7 @@ func (c *Client) Disconnect() {
 func (c *Client) SendFrame(frame Frame) {
 	if c.state != Disconnected {
 		if c.logLevel > DisabledLogLevel && c.logLevel <= UltraDebugLogLevel {
-			c.Log(UltraDebugLogLevel, ">  %s", frame)
+			c.Log(UltraDebugLogLevel, "TX %s", frame)
 		}
 		c.sendQueue <- frame
 	}

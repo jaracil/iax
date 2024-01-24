@@ -8,7 +8,7 @@ import (
 
 type Call struct {
 	client         *Client
-	fullFrameQueue chan *FullFrame
+	respQueue      chan *FullFrame
 	miniFrameQueue chan *MiniFrame
 	localCallID    uint16
 	remoteCallID   uint16
@@ -20,20 +20,29 @@ type Call struct {
 
 func (c *Call) ProcessFrame(frame Frame) {
 	if frame.IsFullFrame() {
-		if frame.OSeqNo() != c.iseqno {
-			c.client.Log(DebugLogLevel, "Call %d: Out of order frame received. Expected %d, got %d", c.localCallID, c.iseqno, frame.OSeqNo())
+		ffrm := frame.(*FullFrame)
+		if ffrm.OSeqNo() != c.iseqno {
+			c.client.Log(DebugLogLevel, "Call %d: Out of order frame received. Expected %d, got %d", c.localCallID, c.iseqno, ffrm.OSeqNo())
 			return
 		}
-		c.iseqno++
+		if !(ffrm.FrameType() == FrmIAXCtl && ffrm.Subclass() == IAXCtlAck) {
+			c.iseqno++
+		}
 
-		if c.remoteCallID == 0 && frame.SrcCallNumber() != 0 {
-			c.remoteCallID = frame.SrcCallNumber()
+		if c.remoteCallID == 0 && ffrm.SrcCallNumber() != 0 {
+			c.remoteCallID = ffrm.SrcCallNumber()
 			c.client.lock.Lock()
 			c.client.remoteCallMap[c.remoteCallID] = c
 			c.client.lock.Unlock()
 			c.client.Log(DebugLogLevel, "Call %d: Remote call ID set to %d", c.localCallID, c.remoteCallID)
 		}
-		c.fullFrameQueue <- frame.(*FullFrame)
+		if ffrm.NeedACK() {
+			c.SendACK(ffrm)
+		}
+		if ffrm.IsResponse() {
+			c.respQueue <- ffrm
+			return
+		}
 	} else {
 		c.miniFrameQueue <- frame.(*MiniFrame)
 	}
@@ -61,8 +70,11 @@ func (c *Call) SendFullFrame(ctx context.Context, frame *FullFrame) (*FullFrame,
 
 	for retry := 1; retry <= 3; retry++ {
 		c.client.SendFrame(frame)
+		if !frame.NeedResponse() {
+			return nil, nil
+		}
 		childCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		iFrm, err := c.WaitForFrame(childCtx)
+		rFrm, err := c.WaitResponse(childCtx)
 		cancel()
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
@@ -72,14 +84,24 @@ func (c *Call) SendFullFrame(ctx context.Context, frame *FullFrame) (*FullFrame,
 			}
 			return nil, err
 		}
-		return iFrm, nil
+		return rFrm, nil
 	}
 	return nil, ErrTimeout
 }
 
-func (c *Call) WaitForFrame(ctx context.Context) (*FullFrame, error) {
+func (c *Call) SendACK(ackFrm *FullFrame) {
+	frame := NewFullFrame(FrmIAXCtl, IAXCtlAck)
+	frame.SetSrcCallNumber(c.localCallID)
+	frame.SetDstCallNumber(c.remoteCallID)
+	frame.SetOSeqNo(c.oseqno)
+	frame.SetISeqNo(c.iseqno)
+	frame.SetTimestamp(ackFrm.Timestamp())
+	c.client.SendFrame(frame)
+}
+
+func (c *Call) WaitResponse(ctx context.Context) (*FullFrame, error) {
 	select {
-	case frame := <-c.fullFrameQueue:
+	case frame := <-c.respQueue:
 		return frame, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
