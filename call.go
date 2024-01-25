@@ -107,3 +107,12 @@ func (c *Call) WaitResponse(ctx context.Context) (*FullFrame, error) {
 		return nil, ctx.Err()
 	}
 }
+
+func (c *Call) Destroy() {
+	c.client.lock.Lock()
+	delete(c.client.localCallMap, c.localCallID)
+	delete(c.client.remoteCallMap, c.remoteCallID)
+	c.client.lock.Unlock()
+	close(c.respQueue)
+	close(c.miniFrameQueue)
+}

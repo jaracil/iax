@@ -22,6 +22,21 @@ const (
 	Connecting
 )
 
+func (cs ClientState) String() string {
+	switch cs {
+	case Disconnected:
+		return "Disconnected"
+	case Disconnecting:
+		return "Disconnecting"
+	case Connected:
+		return "Connected"
+	case Connecting:
+		return "Connecting"
+	default:
+		return "Unknown"
+	}
+}
+
 type LogLevel int
 
 const (
@@ -58,11 +73,11 @@ func (ll LogLevel) String() string {
 
 // ClientOptions are the options for the client
 type ClientOptions struct {
-	Host              string
-	Port              int
-	Username          string
-	Password          string
-	KeepAliveInterval time.Duration
+	Host        string
+	Port        int
+	Username    string
+	Password    string
+	RegInterval time.Duration
 }
 
 // Client is an IAX2 client connection
@@ -75,6 +90,8 @@ type Client struct {
 	callIDCount   uint16
 	localCallMap  map[uint16]*Call
 	remoteCallMap map[uint16]*Call
+	lastRegTime   time.Time
+	regInterval   time.Duration
 	logLevel      LogLevel
 }
 
@@ -118,13 +135,20 @@ func (c *Client) NewCall() *Call {
 	}
 }
 
+func (c *Client) schedRegister() {
+	if c.state == Connected {
+		c.Register(context.Background())
+	}
+}
+
 func (c *Client) Register(ctx context.Context) error {
 
 	call := c.NewCall()
+	defer call.Destroy()
 
 	oFrm := NewFullFrame(FrmIAXCtl, IAXCtlRegReq)
 	oFrm.AddIE(StringIE(IEUsername, c.options.Username))
-	oFrm.AddIE(Uint16IE(IERefresh, uint16(c.options.KeepAliveInterval.Seconds())))
+	oFrm.AddIE(Uint16IE(IERefresh, uint16(c.options.RegInterval.Seconds())))
 
 	rFrm, err := call.SendFullFrame(ctx, oFrm)
 
@@ -160,7 +184,7 @@ func (c *Client) Register(ctx context.Context) error {
 
 		oFrm = NewFullFrame(FrmIAXCtl, IAXCtlRegReq)
 		oFrm.AddIE(StringIE(IEUsername, c.options.Username))
-		oFrm.AddIE(Uint16IE(IERefresh, uint16(c.options.KeepAliveInterval.Seconds())))
+		oFrm.AddIE(Uint16IE(IERefresh, uint16(c.options.RegInterval.Seconds())))
 		oFrm.AddIE(StringIE(IEMD5Result, challengeResponse))
 		rFrm, err = call.SendFullFrame(ctx, oFrm)
 		if err != nil {
@@ -172,6 +196,13 @@ func (c *Client) Register(ctx context.Context) error {
 		}
 
 		if rFrm.Subclass() == IAXCtlRegAck {
+			c.lastRegTime = time.Now()
+			ie := rFrm.FindIE(IERefresh)
+			if ie != nil {
+				c.regInterval = time.Duration(ie.AsUint16()) * time.Second
+			}
+			// Schedule next registration
+			time.AfterFunc(c.regInterval-(5*time.Second), c.schedRegister)
 			return nil
 		}
 
@@ -179,7 +210,6 @@ func (c *Client) Register(ctx context.Context) error {
 			return ErrConnectionRejected
 		}
 	}
-
 	return errors.New("not implemented")
 }
 
@@ -258,6 +288,11 @@ func NewClient(options *ClientOptions) *Client {
 	}
 }
 
+// State returns the client state
+func (c *Client) State() ClientState {
+	return c.state
+}
+
 // Connect connects to the server
 func (c *Client) Connect(ctx context.Context) error {
 	c.state = Connecting
@@ -290,8 +325,6 @@ func (c *Client) Connect(ctx context.Context) error {
 	}
 
 	c.conn = conn
-	c.state = Connected
-
 	go c.sender()
 	go c.receiver()
 
@@ -299,6 +332,8 @@ func (c *Client) Connect(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	c.state = Connected
 
 	return nil
 }
