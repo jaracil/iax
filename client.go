@@ -75,6 +75,7 @@ func (ll LogLevel) String() string {
 type ClientOptions struct {
 	Host        string
 	Port        int
+	BindPort    int
 	Username    string
 	Password    string
 	RegInterval time.Duration
@@ -200,6 +201,8 @@ func (c *Client) Register(ctx context.Context) error {
 			ie := rFrm.FindIE(IERefresh)
 			if ie != nil {
 				c.regInterval = time.Duration(ie.AsUint16()) * time.Second
+			} else {
+				c.regInterval = time.Second * 60
 			}
 			// Schedule next registration
 			time.AfterFunc(c.regInterval-(5*time.Second), c.schedRegister)
@@ -306,20 +309,33 @@ func (c *Client) Connect(ctx context.Context) error {
 		}
 	}()
 
-	if c.options.Port == 0 {
-		c.options.Port = 4569 // Default IAX port
+	var err error
+	var rAddr *net.UDPAddr = nil
+	if c.options.Host != "" {
+		if c.options.Port == 0 {
+			c.options.Port = 4569 // Default IAX port
+		}
+		rAddrStr := c.options.Host
+		if !strings.Contains(rAddrStr, ":") {
+			rAddrStr = rAddrStr + ":" + strconv.Itoa(c.options.Port)
+		}
+
+		rAddr, err = net.ResolveUDPAddr("udp", rAddrStr)
+		if err != nil {
+			return err
+		}
 	}
 
-	if !strings.Contains(c.options.Host, ":") {
-		c.options.Host = c.options.Host + ":" + strconv.Itoa(c.options.Port)
+	var lAddr *net.UDPAddr = nil
+	if c.options.BindPort != 0 {
+		lAddrStr := "0.0.0.0:" + strconv.Itoa(c.options.BindPort)
+		lAddr, err = net.ResolveUDPAddr("udp", lAddrStr)
+		if err != nil {
+			return err
+		}
 	}
 
-	addr, err := net.ResolveUDPAddr("udp", c.options.Host)
-	if err != nil {
-		return err
-	}
-
-	conn, err := net.DialUDP("udp", nil, addr)
+	conn, err := net.DialUDP("udp", lAddr, rAddr)
 	if err != nil {
 		return err
 	}
@@ -328,9 +344,11 @@ func (c *Client) Connect(ctx context.Context) error {
 	go c.sender()
 	go c.receiver()
 
-	err = c.Register(ctx)
-	if err != nil {
-		return err
+	if c.options.RegInterval > 0 {
+		err = c.Register(ctx)
+		if err != nil {
+			return err
+		}
 	}
 
 	c.state = Connected
