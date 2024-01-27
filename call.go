@@ -3,6 +3,7 @@ package iax
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 )
 
@@ -16,6 +17,7 @@ type Call struct {
 	iseqno         uint8
 	firstFrameTs   time.Time
 	isFirstFrame   bool
+	sendLock       sync.Mutex
 }
 
 func (c *Call) ProcessFrame(frame Frame) {
@@ -55,6 +57,16 @@ func (c *Call) SendMiniFrame(frame *MiniFrame) {
 }
 
 func (c *Call) SendFullFrame(ctx context.Context, frame *FullFrame) (*FullFrame, error) {
+	c.sendLock.Lock()
+	defer c.sendLock.Unlock()
+	emptyQueue := false
+	for !emptyQueue { // Empty response queue
+		select {
+		case <-c.respQueue:
+		default:
+			emptyQueue = true
+		}
+	}
 	if c.isFirstFrame {
 		c.firstFrameTs = time.Now()
 		c.isFirstFrame = false
@@ -70,12 +82,18 @@ func (c *Call) SendFullFrame(ctx context.Context, frame *FullFrame) (*FullFrame,
 
 	for retry := 1; retry <= 3; retry++ {
 		c.client.SendFrame(frame)
-		if !frame.NeedResponse() {
-			return nil, nil
+		var rFrm *FullFrame
+		var err error
+		for {
+			childCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+			rFrm, err = c.WaitResponse(childCtx)
+			cancel()
+			if rFrm.Subclass() == IAXCtlAck && frame.NeedResponse() {
+				c.client.Log(DebugLogLevel, "Call %d: Unexpected ACK", c.localCallID)
+				continue
+			}
+			break
 		}
-		childCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		rFrm, err := c.WaitResponse(childCtx)
-		cancel()
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
 				c.client.Log(DebugLogLevel, "Call %d: Timeout waiting for response, retry %d", c.localCallID, retry)
