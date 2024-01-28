@@ -125,10 +125,11 @@ func (c *Client) NewCall() *Call {
 		if _, ok := c.localCallMap[c.callIDCount]; !ok {
 			call := &Call{
 				client:         c,
-				respQueue:      make(chan *FullFrame, 1),
+				respQueue:      make(chan *FullFrame, 3),
 				miniFrameQueue: make(chan *MiniFrame, 10),
 				localCallID:    c.callIDCount,
 				isFirstFrame:   true,
+				state:          IdleCallState,
 			}
 			c.localCallMap[c.callIDCount] = call
 			return call
@@ -151,7 +152,7 @@ func (c *Client) Register(ctx context.Context) error {
 	oFrm.AddIE(StringIE(IEUsername, c.options.Username))
 	oFrm.AddIE(Uint16IE(IERefresh, uint16(c.options.RegInterval.Seconds())))
 
-	rFrm, err := call.SendFullFrame(ctx, oFrm)
+	rFrm, err := call.sendFullFrame(ctx, oFrm)
 
 	if err != nil {
 		return err
@@ -187,7 +188,7 @@ func (c *Client) Register(ctx context.Context) error {
 		oFrm.AddIE(StringIE(IEUsername, c.options.Username))
 		oFrm.AddIE(Uint16IE(IERefresh, uint16(c.options.RegInterval.Seconds())))
 		oFrm.AddIE(StringIE(IEMD5Result, challengeResponse))
-		rFrm, err = call.SendFullFrame(ctx, oFrm)
+		rFrm, err = call.sendFullFrame(ctx, oFrm)
 		if err != nil {
 			return err
 		}
@@ -225,14 +226,14 @@ func (c *Client) routeFrame(frame Frame) {
 	call, ok := c.remoteCallMap[frame.SrcCallNumber()]
 	c.lock.RUnlock()
 	if ok {
-		call.ProcessFrame(frame)
+		call.processFrame(frame)
 		return
 	}
 	c.lock.RLock()
 	call, ok = c.localCallMap[frame.DstCallNumber()]
 	c.lock.RUnlock()
 	if ok {
-		call.ProcessFrame(frame)
+		call.processFrame(frame)
 		return
 	}
 	if frame.IsFullFrame() {

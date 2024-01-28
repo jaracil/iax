@@ -7,6 +7,36 @@ import (
 	"time"
 )
 
+type CallState int
+
+const (
+	IdleCallState CallState = iota
+	DialingCallState
+	RingingCallState
+	RingingBackCallState
+	OnlineCallState
+	HangupCallState
+)
+
+func (cs CallState) String() string {
+	switch cs {
+	case IdleCallState:
+		return "Idle"
+	case DialingCallState:
+		return "Dialing"
+	case RingingCallState:
+		return "Ringing"
+	case RingingBackCallState:
+		return "RingingBack"
+	case OnlineCallState:
+		return "Online"
+	case HangupCallState:
+		return "Hangup"
+	default:
+		return "Unknown"
+	}
+}
+
 type Call struct {
 	client         *Client
 	respQueue      chan *FullFrame
@@ -18,9 +48,11 @@ type Call struct {
 	firstFrameTs   time.Time
 	isFirstFrame   bool
 	sendLock       sync.Mutex
+	state          CallState
+	stateLock      sync.Mutex
 }
 
-func (c *Call) ProcessFrame(frame Frame) {
+func (c *Call) processFrame(frame Frame) {
 	if frame.IsFullFrame() {
 		ffrm := frame.(*FullFrame)
 		if ffrm.OSeqNo() != c.iseqno {
@@ -39,7 +71,7 @@ func (c *Call) ProcessFrame(frame Frame) {
 			c.client.Log(DebugLogLevel, "Call %d: Remote call ID set to %d", c.localCallID, c.remoteCallID)
 		}
 		if ffrm.NeedACK() {
-			c.SendACK(ffrm)
+			c.sendACK(ffrm)
 		}
 		if ffrm.IsResponse() {
 			c.respQueue <- ffrm
@@ -50,13 +82,13 @@ func (c *Call) ProcessFrame(frame Frame) {
 	}
 }
 
-func (c *Call) SendMiniFrame(frame *MiniFrame) {
+func (c *Call) SendMiniFrame(frame *MiniFrame) { // TODO: make it private
 	frame.SetSrcCallNumber(c.localCallID)
 	frame.SetTimestamp(uint32(time.Since(c.firstFrameTs).Milliseconds()))
 	c.client.SendFrame(frame)
 }
 
-func (c *Call) SendFullFrame(ctx context.Context, frame *FullFrame) (*FullFrame, error) {
+func (c *Call) sendFullFrame(ctx context.Context, frame *FullFrame) (*FullFrame, error) {
 	c.sendLock.Lock()
 	defer c.sendLock.Unlock()
 	emptyQueue := false
@@ -86,28 +118,30 @@ func (c *Call) SendFullFrame(ctx context.Context, frame *FullFrame) (*FullFrame,
 		var err error
 		for {
 			childCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
-			rFrm, err = c.WaitResponse(childCtx)
+			rFrm, err = c.waitResponse(childCtx)
 			cancel()
+			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) {
+					c.client.Log(DebugLogLevel, "Call %d: Timeout waiting for response, retry %d", c.localCallID, retry)
+					frame.SetRetransmit(true)
+					break
+				}
+				return nil, err
+			}
 			if rFrm.Subclass() == IAXCtlAck && frame.NeedResponse() {
 				c.client.Log(DebugLogLevel, "Call %d: Unexpected ACK", c.localCallID)
 				continue
 			}
 			break
 		}
-		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) {
-				c.client.Log(DebugLogLevel, "Call %d: Timeout waiting for response, retry %d", c.localCallID, retry)
-				frame.SetRetransmit(true)
-				continue
-			}
-			return nil, err
+		if err == nil {
+			return rFrm, nil
 		}
-		return rFrm, nil
 	}
 	return nil, ErrTimeout
 }
 
-func (c *Call) SendACK(ackFrm *FullFrame) {
+func (c *Call) sendACK(ackFrm *FullFrame) {
 	frame := NewFullFrame(FrmIAXCtl, IAXCtlAck)
 	frame.SetSrcCallNumber(c.localCallID)
 	frame.SetDstCallNumber(c.remoteCallID)
@@ -117,7 +151,7 @@ func (c *Call) SendACK(ackFrm *FullFrame) {
 	c.client.SendFrame(frame)
 }
 
-func (c *Call) WaitResponse(ctx context.Context) (*FullFrame, error) {
+func (c *Call) waitResponse(ctx context.Context) (*FullFrame, error) {
 	select {
 	case frame := <-c.respQueue:
 		return frame, nil
@@ -133,4 +167,18 @@ func (c *Call) Destroy() {
 	c.client.lock.Unlock()
 	close(c.respQueue)
 	close(c.miniFrameQueue)
+}
+
+// State returns the call state
+func (c *Call) State() CallState {
+	c.stateLock.Lock()
+	defer c.stateLock.Unlock()
+	return c.state
+}
+
+// SetState sets the call state
+func (c *Call) SetState(state CallState) {
+	c.stateLock.Lock()
+	defer c.stateLock.Unlock()
+	c.state = state
 }
