@@ -3,5 +3,5 @@
 
 echo "Starting asterisk test environment..."
 cd "$(dirname "$0")"
-docker run --name asterisk -ti --rm -p 4569:4569/UDP -v ./astcfg:/etc/asterisk:ro andrius/asterisk:alpine-20.5.2
+docker run --name asterisk -ti --rm --network=host -v $(pwd)/astcfg:/etc/asterisk -v $(pwd)/sounds:/var/lib/asterisk/sounds/en andrius/asterisk:alpine-20.5.2
 echo "Asterisk service stopped."
