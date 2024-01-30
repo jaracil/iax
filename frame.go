@@ -58,47 +58,63 @@ func (ft FrameType) String() string {
 
 // IE types
 const (
-	IECalledNumber  IEType = 0x01
-	IECallingNumber IEType = 0x02
-	IECallingAni    IEType = 0x03
-	IECallingName   IEType = 0x04
-	IECalledContext IEType = 0x05
-	IEUsername      IEType = 0x06
-	IEPassword      IEType = 0x07
-	IECapability    IEType = 0x08
-	IEFormat        IEType = 0x09
-	IELanguage      IEType = 0x0a
-	IEVersion       IEType = 0x0b
-	IEADSICPE       IEType = 0x0c
-	IEDNID          IEType = 0x0d
-	IEAuthMethods   IEType = 0x0e
-	IEChallenge     IEType = 0x0f
-	IEMD5Result     IEType = 0x10
-	IERSAResult     IEType = 0x11
-	IEApparentAddr  IEType = 0x12
-	IERefresh       IEType = 0x13
-	IEDPStatus      IEType = 0x14
-	IECallNumber    IEType = 0x15
-	IECause         IEType = 0x16
-	IEIAXUnknown    IEType = 0x17
-	IEMsgCount      IEType = 0x18
-	IEAutoAnswer    IEType = 0x19
-	IEMusiconHold   IEType = 0x1a
-	IETransferID    IEType = 0x1b
-	IERDNIS         IEType = 0x1c
-	IEDateTime      IEType = 0x1f
-	IECallingPres   IEType = 0x26
-	IECallingTON    IEType = 0x27
-	IECallingTNS    IEType = 0x28
-	IESamplingRate  IEType = 0x29
-	IECauseCode     IEType = 0x2a
-	IEEncryption    IEType = 0x2b
-	IEEncKey        IEType = 0x2c
-	IECodecPrefs    IEType = 0x2d
-	IERRJitter      IEType = 0x2e
-	IERRLoss        IEType = 0x2f
-	IERRPackets     IEType = 0x30
-	IERRDelay       IEType = 0x31
+	IECalledNumber    IEType = 1
+	IECallingNumber   IEType = 2
+	IECallingAni      IEType = 3
+	IECallingName     IEType = 4
+	IECalledContext   IEType = 5
+	IEUsername        IEType = 6
+	IEPassword        IEType = 7
+	IECapability      IEType = 8
+	IEFormat          IEType = 9
+	IELanguage        IEType = 10
+	IEVersion         IEType = 11
+	IEADSICPE         IEType = 12
+	IEDNID            IEType = 13
+	IEAuthMethods     IEType = 14
+	IEChallenge       IEType = 15
+	IEMD5Result       IEType = 16
+	IERSAResult       IEType = 17
+	IEApparentAddr    IEType = 18
+	IERefresh         IEType = 19
+	IEDPStatus        IEType = 20
+	IECallNumber      IEType = 21
+	IECause           IEType = 22
+	IEIAXUnknown      IEType = 23
+	IEMsgCount        IEType = 24
+	IEAutoAnswer      IEType = 25
+	IEMusiconHold     IEType = 26
+	IETransferID      IEType = 27
+	IERDNIS           IEType = 28
+	IEProvisioning    IEType = 29
+	IEAesProvisioning IEType = 30
+	IEDateTime        IEType = 31
+	IEDeviceType      IEType = 32
+	IEServiceIdent    IEType = 33
+	IEFirmwareVer     IEType = 34
+	IEFwBlockDesc     IEType = 35
+	IEFwBlockData     IEType = 36
+	IEProvVer         IEType = 37
+	IECallingPres     IEType = 38
+	IECallingTON      IEType = 39
+	IECallingTNS      IEType = 40
+	IESamplingRate    IEType = 41
+	IECauseCode       IEType = 42
+	IEEncryption      IEType = 43
+	IEEncKey          IEType = 44
+	IECodecPrefs      IEType = 45
+	IERRJitter        IEType = 46
+	IERRLoss          IEType = 47
+	IERRPackets       IEType = 48
+	IERRDelay         IEType = 49
+	IERRDropped       IEType = 50
+	IERROOO           IEType = 51
+	IEVariable        IEType = 52
+	IEOSPToken        IEType = 53
+	IECallToken       IEType = 54
+	IECapability2     IEType = 55
+	IEFormat2         IEType = 56
+	IECallingANI2     IEType = 57
 )
 
 func (ie IEType) String() string {
@@ -159,8 +175,24 @@ func (ie IEType) String() string {
 		return "TransferID"
 	case IERDNIS:
 		return "RDNIS"
+	case IEProvisioning:
+		return "Provisioning"
+	case IEAesProvisioning:
+		return "AesProvisioning"
 	case IEDateTime:
 		return "DateTime"
+	case IEDeviceType:
+		return "DeviceType"
+	case IEServiceIdent:
+		return "ServiceIdent"
+	case IEFirmwareVer:
+		return "FirmwareVer"
+	case IEFwBlockDesc:
+		return "FwBlockDesc"
+	case IEFwBlockData:
+		return "FwBlockData"
+	case IEProvVer:
+		return "ProvVer"
 	case IECallingPres:
 		return "CallingPres"
 	case IECallingTON:
@@ -185,6 +217,22 @@ func (ie IEType) String() string {
 		return "RRPackets"
 	case IERRDelay:
 		return "RRDelay"
+	case IERRDropped:
+		return "RRDropped"
+	case IERROOO:
+		return "RROOO"
+	case IEVariable:
+		return "Variable"
+	case IEOSPToken:
+		return "OSPToken"
+	case IECallToken:
+		return "CallToken"
+	case IECapability2:
+		return "Capability2"
+	case IEFormat2:
+		return "Format2"
+	case IECallingANI2:
+		return "CallingANI2"
 	default:
 		return fmt.Sprintf("Unknown(%d)", ie)
 	}
