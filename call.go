@@ -10,16 +10,20 @@ import (
 type CallState int
 
 const (
-	IdleCallState CallState = iota
+	UninitializedCallState CallState = iota
+	IdleCallState
 	DialingCallState
 	RingingCallState
 	RingingBackCallState
 	OnlineCallState
 	HangupCallState
+	DestroyedCallState
 )
 
 func (cs CallState) String() string {
 	switch cs {
+	case UninitializedCallState:
+		return "Uninitialized"
 	case IdleCallState:
 		return "Idle"
 	case DialingCallState:
@@ -32,24 +36,133 @@ func (cs CallState) String() string {
 		return "Online"
 	case HangupCallState:
 		return "Hangup"
+	case DestroyedCallState:
+		return "Destroyed"
 	default:
 		return "Unknown"
 	}
 }
 
+type CallEventKind int
+
+const (
+	StateChangeEventKind CallEventKind = iota
+	MediaEventKind
+	DTMFEventKind
+)
+
+func (et CallEventKind) String() string {
+	switch et {
+	case StateChangeEventKind:
+		return "StateChange"
+	case MediaEventKind:
+		return "Media"
+	case DTMFEventKind:
+		return "DTMF"
+	default:
+		return "Unknown"
+	}
+}
+
+type StateChangeEvent struct {
+	State     CallState
+	PrevState CallState
+	TimeStamp time.Time
+}
+
+func (e *StateChangeEvent) Kind() CallEventKind {
+	return StateChangeEventKind
+}
+
+type MediaEvent struct {
+	Data      []byte
+	Codec     uint64
+	TimeStamp time.Time
+}
+
+func (e *MediaEvent) Kind() CallEventKind {
+	return MediaEventKind
+}
+
+type DTMFEvent struct {
+	Digit     uint8
+	TimeStamp time.Time
+}
+
+type CallEvent interface {
+	Kind() CallEventKind
+}
+
+type CallEventHandler func(event CallEvent)
+
+type CallOptions struct {
+	EvtQueueSize int
+	EventHandler CallEventHandler
+}
+
 type Call struct {
-	client         *Client
-	respQueue      chan *FullFrame
-	miniFrameQueue chan *MiniFrame
-	localCallID    uint16
-	remoteCallID   uint16
-	oseqno         uint8
-	iseqno         uint8
-	firstFrameTs   time.Time
-	isFirstFrame   bool
-	sendLock       sync.Mutex
-	state          CallState
-	stateLock      sync.Mutex
+	client       *Client
+	respQueue    chan *FullFrame
+	evtQueue     chan CallEvent
+	localCallID  uint16
+	remoteCallID uint16
+	oseqno       uint8
+	iseqno       uint8
+	firstFrameTs time.Time
+	isFirstFrame bool
+	sendLock     sync.Mutex
+	state        CallState
+	stateLock    sync.Mutex
+	eventHandler CallEventHandler
+}
+
+func NewCall(c *Client, opts *CallOptions) *Call {
+	if opts == nil {
+		opts = &CallOptions{
+			EvtQueueSize: 20,
+		}
+	}
+
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	for {
+		c.callIDCount++
+		if c.callIDCount > 0x7fff {
+			c.callIDCount = 1
+		}
+		if _, ok := c.localCallMap[c.callIDCount]; !ok {
+			call := &Call{
+				client:       c,
+				respQueue:    make(chan *FullFrame, 3),
+				evtQueue:     make(chan CallEvent, opts.EvtQueueSize),
+				eventHandler: opts.EventHandler,
+				localCallID:  c.callIDCount,
+				isFirstFrame: true,
+			}
+			call.setState(IdleCallState)
+			c.localCallMap[c.callIDCount] = call
+			return call
+		}
+	}
+}
+
+func (c *Call) eventLoop() {
+	for {
+		evt, ok := <-c.evtQueue
+		if !ok {
+			return
+		}
+		if c.eventHandler != nil {
+			c.eventHandler(evt)
+		}
+	}
+}
+
+func (c *Call) SetEventHandler(handler CallEventHandler) {
+	if handler == nil {
+		c.eventHandler = handler
+		go c.eventLoop()
+	}
 }
 
 func (c *Call) processFrame(frame Frame) {
@@ -78,7 +191,8 @@ func (c *Call) processFrame(frame Frame) {
 			return
 		}
 	} else {
-		c.miniFrameQueue <- frame.(*MiniFrame)
+		// Enqueue media event
+
 	}
 }
 
@@ -112,7 +226,7 @@ func (c *Call) sendFullFrame(ctx context.Context, frame *FullFrame) (*FullFrame,
 	c.oseqno++
 	frame.SetISeqNo(c.iseqno)
 
-	for retry := 1; retry <= 3; retry++ {
+	for retry := 1; retry <= 2; retry++ {
 		c.client.SendFrame(frame)
 		var rFrm *FullFrame
 		var err error
@@ -160,13 +274,15 @@ func (c *Call) waitResponse(ctx context.Context) (*FullFrame, error) {
 	}
 }
 
+// Destroy destroys the call and releases resources
 func (c *Call) Destroy() {
 	c.client.lock.Lock()
 	delete(c.client.localCallMap, c.localCallID)
 	delete(c.client.remoteCallMap, c.remoteCallID)
 	c.client.lock.Unlock()
+	c.setState(DestroyedCallState)
 	close(c.respQueue)
-	close(c.miniFrameQueue)
+	close(c.evtQueue)
 }
 
 // State returns the call state
@@ -176,9 +292,16 @@ func (c *Call) State() CallState {
 	return c.state
 }
 
-// SetState sets the call state
-func (c *Call) SetState(state CallState) {
+func (c *Call) setState(state CallState) {
 	c.stateLock.Lock()
 	defer c.stateLock.Unlock()
-	c.state = state
+	if state != c.state {
+		oldState := c.state
+		c.state = state
+		c.evtQueue <- &StateChangeEvent{
+			State:     state,
+			PrevState: oldState,
+			TimeStamp: time.Now(),
+		}
+	}
 }

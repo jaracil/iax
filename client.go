@@ -113,30 +113,6 @@ func (c *Client) Log(level LogLevel, format string, args ...interface{}) {
 	}
 }
 
-// NewCall returns new Call
-func (c *Client) NewCall() *Call {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	for {
-		c.callIDCount++
-		if c.callIDCount > 0x7fff {
-			c.callIDCount = 1
-		}
-		if _, ok := c.localCallMap[c.callIDCount]; !ok {
-			call := &Call{
-				client:         c,
-				respQueue:      make(chan *FullFrame, 3),
-				miniFrameQueue: make(chan *MiniFrame, 10),
-				localCallID:    c.callIDCount,
-				isFirstFrame:   true,
-				state:          IdleCallState,
-			}
-			c.localCallMap[c.callIDCount] = call
-			return call
-		}
-	}
-}
-
 func (c *Client) schedRegister() {
 	if c.state == Connected {
 		c.Register(context.Background())
@@ -145,7 +121,7 @@ func (c *Client) schedRegister() {
 
 func (c *Client) Register(ctx context.Context) error {
 
-	call := c.NewCall()
+	call := NewCall(c, nil)
 	defer call.Destroy()
 
 	oFrm := NewFullFrame(FrmIAXCtl, IAXCtlRegReq)
