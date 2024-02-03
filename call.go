@@ -102,6 +102,7 @@ type CallOptions struct {
 
 type Call struct {
 	client       *Client
+	options      *CallOptions
 	respQueue    chan *FullFrame
 	evtQueue     chan CallEvent
 	localCallID  uint16
@@ -114,6 +115,8 @@ type Call struct {
 	state        CallState
 	stateLock    sync.Mutex
 	eventHandler CallEventHandler
+	// specific to media
+	outgoing bool
 }
 
 func NewCall(c *Client, opts *CallOptions) *Call {
@@ -121,6 +124,9 @@ func NewCall(c *Client, opts *CallOptions) *Call {
 		opts = &CallOptions{
 			EvtQueueSize: 20,
 		}
+	}
+	if opts.EvtQueueSize == 0 {
+		opts.EvtQueueSize = 20
 	}
 
 	c.lock.Lock()
@@ -133,6 +139,7 @@ func NewCall(c *Client, opts *CallOptions) *Call {
 		if _, ok := c.localCallMap[c.callIDCount]; !ok {
 			call := &Call{
 				client:       c,
+				options:      opts,
 				respQueue:    make(chan *FullFrame, 3),
 				evtQueue:     make(chan CallEvent, opts.EvtQueueSize),
 				eventHandler: opts.EventHandler,
@@ -158,11 +165,19 @@ func (c *Call) eventLoop() {
 	}
 }
 
+// SetEventHandler sets the event handler for the call.
+// Only one handler can be set at a time.
+// Handler can be set in CallOptions when creating a new call.
 func (c *Call) SetEventHandler(handler CallEventHandler) {
 	if handler == nil {
 		c.eventHandler = handler
 		go c.eventLoop()
 	}
+}
+
+// IsOutgoing returns true if the call was initiated by us.
+func (c *Call) IsOutgoing() bool {
+	return c.outgoing
 }
 
 func (c *Call) processFrame(frame Frame) {
@@ -298,10 +313,14 @@ func (c *Call) setState(state CallState) {
 	if state != c.state {
 		oldState := c.state
 		c.state = state
-		c.evtQueue <- &StateChangeEvent{
+		select {
+		case c.evtQueue <- &StateChangeEvent{
 			State:     state,
 			PrevState: oldState,
 			TimeStamp: time.Now(),
+		}:
+		default:
+			c.client.Log(ErrorLogLevel, "Call %d: Event queue full", c.localCallID)
 		}
 	}
 }
