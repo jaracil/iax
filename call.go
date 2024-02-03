@@ -153,6 +153,17 @@ func NewCall(c *Client, opts *CallOptions) *Call {
 	}
 }
 
+// Options returns a copy of the call options
+func (c *Call) Options() *CallOptions {
+	r := *c.options
+	return &r
+}
+
+// SetOptions sets the call options
+func (c *Call) SetOptions(opts *CallOptions) {
+	c.options = opts
+}
+
 func (c *Call) eventLoop() {
 	for {
 		evt, ok := <-c.evtQueue
