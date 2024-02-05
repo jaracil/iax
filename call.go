@@ -10,20 +10,16 @@ import (
 type CallState int
 
 const (
-	UninitializedCallState CallState = iota
-	IdleCallState
+	IdleCallState CallState = iota
 	DialingCallState
 	RingingCallState
 	RingingBackCallState
 	OnlineCallState
 	HangupCallState
-	DestroyedCallState
 )
 
 func (cs CallState) String() string {
 	switch cs {
-	case UninitializedCallState:
-		return "Uninitialized"
 	case IdleCallState:
 		return "Idle"
 	case DialingCallState:
@@ -36,8 +32,6 @@ func (cs CallState) String() string {
 		return "Online"
 	case HangupCallState:
 		return "Hangup"
-	case DestroyedCallState:
-		return "Destroyed"
 	default:
 		return "Unknown"
 	}
@@ -89,22 +83,21 @@ type DTMFEvent struct {
 	TimeStamp time.Time
 }
 
+func (e *DTMFEvent) Kind() CallEventKind {
+	return DTMFEventKind
+}
+
 type CallEvent interface {
 	Kind() CallEventKind
 }
 
 type CallEventHandler func(event CallEvent)
-
-type CallOptions struct {
-	EvtQueueSize int
-	EventHandler CallEventHandler
-}
-
 type Call struct {
 	client       *Client
-	options      *CallOptions
 	respQueue    chan *FullFrame
 	evtQueue     chan CallEvent
+	ctx          context.Context
+	cancel       context.CancelFunc
 	localCallID  uint16
 	remoteCallID uint16
 	oseqno       uint8
@@ -115,18 +108,17 @@ type Call struct {
 	state        CallState
 	stateLock    sync.Mutex
 	eventHandler CallEventHandler
+	hangupCause  string
+	hangupCode   uint8
+	hangupRemote bool
 	// specific to media
 	outgoing bool
 }
 
-func NewCall(c *Client, opts *CallOptions) *Call {
-	if opts == nil {
-		opts = &CallOptions{
-			EvtQueueSize: 20,
-		}
-	}
-	if opts.EvtQueueSize == 0 {
-		opts.EvtQueueSize = 20
+func NewCall(c *Client) *Call {
+	evtQueueSize := c.options.CallEvtQueueSize
+	if evtQueueSize == 0 {
+		evtQueueSize = 20
 	}
 
 	c.lock.Lock()
@@ -136,13 +128,14 @@ func NewCall(c *Client, opts *CallOptions) *Call {
 		if c.callIDCount > 0x7fff {
 			c.callIDCount = 1
 		}
+		ctx, cancel := context.WithCancel(context.Background())
 		if _, ok := c.localCallMap[c.callIDCount]; !ok {
 			call := &Call{
 				client:       c,
-				options:      opts,
+				ctx:          ctx,
+				cancel:       cancel,
 				respQueue:    make(chan *FullFrame, 3),
-				evtQueue:     make(chan CallEvent, opts.EvtQueueSize),
-				eventHandler: opts.EventHandler,
+				evtQueue:     make(chan CallEvent, evtQueueSize),
 				localCallID:  c.callIDCount,
 				isFirstFrame: true,
 			}
@@ -151,17 +144,6 @@ func NewCall(c *Client, opts *CallOptions) *Call {
 			return call
 		}
 	}
-}
-
-// Options returns a copy of the call options
-func (c *Call) Options() *CallOptions {
-	r := *c.options
-	return &r
-}
-
-// SetOptions sets the call options
-func (c *Call) SetOptions(opts *CallOptions) {
-	c.options = opts
 }
 
 func (c *Call) eventLoop() {
@@ -178,7 +160,6 @@ func (c *Call) eventLoop() {
 
 // SetEventHandler sets the event handler for the call.
 // Only one handler can be set at a time.
-// Handler can be set in CallOptions when creating a new call.
 func (c *Call) SetEventHandler(handler CallEventHandler) {
 	if handler == nil {
 		c.eventHandler = handler
@@ -192,6 +173,9 @@ func (c *Call) IsOutgoing() bool {
 }
 
 func (c *Call) processFrame(frame Frame) {
+	if c.State() == HangupCallState {
+		return
+	}
 	if frame.IsFullFrame() {
 		ffrm := frame.(*FullFrame)
 		if ffrm.OSeqNo() != c.iseqno {
@@ -201,7 +185,6 @@ func (c *Call) processFrame(frame Frame) {
 		if !(ffrm.FrameType() == FrmIAXCtl && ffrm.Subclass() == IAXCtlAck) {
 			c.iseqno++
 		}
-
 		if c.remoteCallID == 0 && ffrm.SrcCallNumber() != 0 {
 			c.remoteCallID = ffrm.SrcCallNumber()
 			c.client.lock.Lock()
@@ -216,8 +199,40 @@ func (c *Call) processFrame(frame Frame) {
 			c.respQueue <- ffrm
 			return
 		}
+		switch ffrm.FrameType() {
+		case FrmIAXCtl:
+			switch ffrm.Subclass() {
+			case IAXCtlHangup:
+				ie := ffrm.FindIE(IECause)
+				if ie != nil {
+					c.hangupCause = ie.AsString()
+				}
+				ie = ffrm.FindIE(IECauseCode)
+				if ie != nil {
+					c.hangupCode = ie.AsUint8()
+				}
+				c.hangupRemote = true
+				c.setState(HangupCallState)
+				c.Destroy()
+			case IAXCtlNew:
+				if c.State() == IdleCallState {
+					c.setState(RingingCallState)
+
+				} else if c.State() == RingingCallState && ffrm.Retransmit() {
+					c.client.Log(DebugLogLevel, "Call %d: Ignoring retransmitted new", c.localCallID)
+				} else {
+					c.client.Log(DebugLogLevel, "Call %d: Unexpected new", c.localCallID)
+				}
+			}
+		case FrmDTMF:
+			c.pushEvent(&DTMFEvent{
+				Digit:     uint8(ffrm.Subclass()),
+				TimeStamp: time.Now(),
+			})
+		}
 	} else {
-		// Enqueue media event
+		// Enqueue miniframes media event
+		return
 
 	}
 }
@@ -228,7 +243,7 @@ func (c *Call) SendMiniFrame(frame *MiniFrame) { // TODO: make it private
 	c.client.SendFrame(frame)
 }
 
-func (c *Call) sendFullFrame(ctx context.Context, frame *FullFrame) (*FullFrame, error) {
+func (c *Call) sendFullFrame(frame *FullFrame) (*FullFrame, error) {
 	c.sendLock.Lock()
 	defer c.sendLock.Unlock()
 	emptyQueue := false
@@ -257,9 +272,7 @@ func (c *Call) sendFullFrame(ctx context.Context, frame *FullFrame) (*FullFrame,
 		var rFrm *FullFrame
 		var err error
 		for {
-			childCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
-			rFrm, err = c.waitResponse(childCtx)
-			cancel()
+			rFrm, err = c.waitResponse(time.Second)
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
 					c.client.Log(DebugLogLevel, "Call %d: Timeout waiting for response, retry %d", c.localCallID, retry)
@@ -291,7 +304,9 @@ func (c *Call) sendACK(ackFrm *FullFrame) {
 	c.client.SendFrame(frame)
 }
 
-func (c *Call) waitResponse(ctx context.Context) (*FullFrame, error) {
+func (c *Call) waitResponse(timeout time.Duration) (*FullFrame, error) {
+	ctx, cancel := context.WithTimeout(c.ctx, timeout)
+	defer cancel()
 	select {
 	case frame := <-c.respQueue:
 		return frame, nil
@@ -306,9 +321,17 @@ func (c *Call) Destroy() {
 	delete(c.client.localCallMap, c.localCallID)
 	delete(c.client.remoteCallMap, c.remoteCallID)
 	c.client.lock.Unlock()
-	c.setState(DestroyedCallState)
 	close(c.respQueue)
 	close(c.evtQueue)
+	c.cancel()
+}
+
+func (c *Call) pushEvent(evt CallEvent) {
+	select {
+	case c.evtQueue <- evt:
+	default:
+		c.client.Log(ErrorLogLevel, "Call %d: Event queue full", c.localCallID)
+	}
 }
 
 // State returns the call state
@@ -318,20 +341,51 @@ func (c *Call) State() CallState {
 	return c.state
 }
 
+// Hangup hangs up the call.
+func (c *Call) Hangup(cause string, code uint8) error {
+	if c.State() != HangupCallState {
+		frame := NewFullFrame(FrmIAXCtl, IAXCtlHangup)
+		if cause != "" {
+			frame.AddIE(StringIE(IECause, cause))
+		}
+		if code != 0 {
+			frame.AddIE(Uint8IE(IECauseCode, code))
+		}
+		_, err := c.sendFullFrame(frame)
+		c.setState(HangupCallState)
+		if err != nil {
+			return err
+		}
+	} else {
+		return ErrInvalidState
+	}
+	c.Destroy()
+	return nil
+}
+
+func (c *Call) SendDTMF(digit uint8) error {
+	if c.State() == OnlineCallState {
+		frame := NewFullFrame(FrmDTMF, Subclass(digit))
+		_, err := c.sendFullFrame(frame)
+		if err != nil {
+			return err
+		}
+	} else {
+		return ErrInvalidState
+	}
+	return nil
+}
+
 func (c *Call) setState(state CallState) {
 	c.stateLock.Lock()
 	defer c.stateLock.Unlock()
 	if state != c.state {
 		oldState := c.state
 		c.state = state
-		select {
-		case c.evtQueue <- &StateChangeEvent{
+		c.pushEvent(&StateChangeEvent{
 			State:     state,
 			PrevState: oldState,
 			TimeStamp: time.Now(),
-		}:
-		default:
-			c.client.Log(ErrorLogLevel, "Call %d: Event queue full", c.localCallID)
-		}
+		})
 	}
 }

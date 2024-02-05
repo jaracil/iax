@@ -11,4 +11,5 @@ var (
 	ErrMissingIE             = errors.New("missing information element")
 	ErrUnsupportedAuthMethod = errors.New("unsupported authentication method")
 	ErrConnectionRejected    = errors.New("connection rejected")
+	ErrInvalidState          = errors.New("invalid state")
 )

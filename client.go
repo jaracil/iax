@@ -1,7 +1,6 @@
 package iax
 
 import (
-	"context"
 	"crypto/md5"
 	"encoding/hex"
 	"errors"
@@ -73,12 +72,13 @@ func (ll LogLevel) String() string {
 
 // ClientOptions are the options for the client
 type ClientOptions struct {
-	Host        string
-	Port        int
-	BindPort    int
-	Username    string
-	Password    string
-	RegInterval time.Duration
+	Host             string
+	Port             int
+	BindPort         int
+	Username         string
+	Password         string
+	RegInterval      time.Duration
+	CallEvtQueueSize int
 }
 
 // Client is an IAX2 client connection
@@ -115,20 +115,20 @@ func (c *Client) Log(level LogLevel, format string, args ...interface{}) {
 
 func (c *Client) schedRegister() {
 	if c.state == Connected {
-		c.Register(context.Background())
+		c.Register()
 	}
 }
 
-func (c *Client) Register(ctx context.Context) error {
+func (c *Client) Register() error {
 
-	call := NewCall(c, nil)
+	call := NewCall(c)
 	defer call.Destroy()
 
 	oFrm := NewFullFrame(FrmIAXCtl, IAXCtlRegReq)
 	oFrm.AddIE(StringIE(IEUsername, c.options.Username))
 	oFrm.AddIE(Uint16IE(IERefresh, uint16(c.options.RegInterval.Seconds())))
 
-	rFrm, err := call.sendFullFrame(ctx, oFrm)
+	rFrm, err := call.sendFullFrame(oFrm)
 
 	if err != nil {
 		return err
@@ -164,7 +164,7 @@ func (c *Client) Register(ctx context.Context) error {
 		oFrm.AddIE(StringIE(IEUsername, c.options.Username))
 		oFrm.AddIE(Uint16IE(IERefresh, uint16(c.options.RegInterval.Seconds())))
 		oFrm.AddIE(StringIE(IEMD5Result, challengeResponse))
-		rFrm, err = call.sendFullFrame(ctx, oFrm)
+		rFrm, err = call.sendFullFrame(oFrm)
 		if err != nil {
 			return err
 		}
@@ -212,7 +212,7 @@ func (c *Client) routeFrame(frame Frame) {
 		call.processFrame(frame)
 		return
 	}
-	if frame.IsFullFrame() {
+	if frame.IsFullFrame() { // Respond invalid full frames
 		ffrm := frame.(*FullFrame)
 		if ffrm.DstCallNumber() != 0 {
 			oFrm := NewFullFrame(FrmIAXCtl, IAXCtlInval)
@@ -274,7 +274,7 @@ func (c *Client) State() ClientState {
 }
 
 // Connect connects to the server
-func (c *Client) Connect(ctx context.Context) error {
+func (c *Client) Connect() error {
 	c.state = Connecting
 	c.sendQueue = make(chan Frame, 100)
 	c.localCallMap = make(map[uint16]*Call)
@@ -322,7 +322,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	go c.receiver()
 
 	if c.options.RegInterval > 0 {
-		err = c.Register(ctx)
+		err = c.Register()
 		if err != nil {
 			return err
 		}
@@ -360,4 +360,10 @@ func (c *Client) SendFrame(frame Frame) {
 		}
 		c.sendQueue <- frame
 	}
+}
+
+// Options returns a copy of the client options
+func (c *Client) Options() *ClientOptions {
+	opts := *c.options
+	return &opts
 }
