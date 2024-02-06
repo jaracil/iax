@@ -56,6 +56,231 @@ func (ft FrameType) String() string {
 	}
 }
 
+type Codec uint8
+type CodecMask uint64
+
+// Codecs
+const (
+	CODEC_G723      Codec = 0
+	CODEC_GSM       Codec = 1
+	CODEC_ULAW      Codec = 2
+	CODEC_ALAW      Codec = 3
+	CODEC_G726      Codec = 4
+	CODEC_ADPCM     Codec = 5
+	CODEC_SLIN      Codec = 6
+	CODEC_LPC10     Codec = 7
+	CODEC_G729      Codec = 8
+	CODEC_SPEEX     Codec = 9
+	CODEC_ILBC      Codec = 10
+	CODEC_G726_AAL2 Codec = 11
+	CODEC_G722      Codec = 12
+	CODEC_SIREN7    Codec = 13
+	CODEC_SIREN14   Codec = 14
+	CODEC_SLIN16    Codec = 15
+	CODEC_JPEG      Codec = 16
+	CODEC_PNG       Codec = 17
+	CODEC_H261      Codec = 18
+	CODEC_H263      Codec = 19
+	CODEC_H263P     Codec = 20
+	CODEC_H264      Codec = 21
+	CODEC_MP4       Codec = 22
+	CODEC_VP8       Codec = 23
+	CODEC_T140_RED  Codec = 26
+	CODEC_T140      Codec = 27
+	CODEC_G719      Codec = 32
+	CODEC_SPEEX16   Codec = 33
+	CODEC_OPUS      Codec = 34
+	CODEC_UNKNOWN   Codec = 255
+)
+
+var pereferredCodecs = []Codec{
+	CODEC_G723,
+	CODEC_GSM,
+	CODEC_ULAW,
+	CODEC_ALAW,
+	CODEC_G726,
+	CODEC_ADPCM,
+	CODEC_SLIN,
+	CODEC_LPC10,
+	CODEC_G729,
+	CODEC_SPEEX,
+	CODEC_SPEEX16,
+	CODEC_ILBC,
+	CODEC_G726_AAL2,
+	CODEC_G722,
+	CODEC_SLIN16,
+	CODEC_JPEG,
+	CODEC_PNG,
+	CODEC_H261,
+	CODEC_H263,
+	CODEC_H263P,
+	CODEC_H264,
+	CODEC_MP4,
+	CODEC_T140_RED,
+	CODEC_T140,
+	CODEC_SIREN7,
+	CODEC_SIREN14,
+	0, /* reserved; was AST_FORMAT_TESTLAW */
+	CODEC_G719,
+	0, /* Place holder */
+	0, /* Place holder */
+	0, /* Place holder */
+	0, /* Place holder */
+	0, /* Place holder */
+	0, /* Place holder */
+	0, /* Place holder */
+	0, /* Place holder */
+	CODEC_OPUS,
+	CODEC_VP8,
+}
+
+func encodePrefCodec(c Codec) string {
+	for i, codec := range pereferredCodecs {
+		if codec == c {
+			// Return char 'B' + index
+			return string(rune('B' + i))
+		}
+	}
+	return ""
+}
+
+func decodePrefCodec(s string) Codec {
+	if len(s) != 1 {
+		return CODEC_UNKNOWN
+	}
+	i := int(s[0] - 'B')
+	if i < 0 || i >= len(pereferredCodecs) {
+		return CODEC_UNKNOWN
+	}
+	return pereferredCodecs[i]
+}
+
+// EncodePreferredCodecs returns the string representation of the preferred codecs
+func EncodePreferredCodecs(codecs []Codec) string {
+	res := ""
+	for _, c := range codecs {
+		res += encodePrefCodec(c)
+	}
+	return res
+}
+
+// DecodePreferredCodecs returns the preferred codecs from the string representation
+func DecodePreferredCodecs(s string) []Codec {
+	res := make([]Codec, 0, len(s))
+	for _, c := range s {
+		res = append(res, decodePrefCodec(string(c)))
+	}
+	return res
+}
+
+// BitMask returns the bitmask for the codec
+func (c Codec) BitMask() CodecMask {
+	return 1 << c
+}
+
+// Subclass returns the subclass audio frame for the codec
+func (c Codec) Subclass() Subclass {
+	return Subclass(0x80 + c)
+}
+
+// CodecFromSubclass returns the codec from the audio frame subclass
+func CodecFromSubclass(sc Subclass) Codec {
+	return Codec(sc - 0x80)
+}
+
+// String returns the string representation of the codec
+func (c Codec) String() string {
+	switch c {
+	case CODEC_G723:
+		return "G723"
+	case CODEC_GSM:
+		return "GSM"
+	case CODEC_ULAW:
+		return "ULAW"
+	case CODEC_ALAW:
+		return "ALAW"
+	case CODEC_G726:
+		return "G726"
+	case CODEC_ADPCM:
+		return "ADPCM"
+	case CODEC_SLIN:
+		return "SLIN"
+	case CODEC_LPC10:
+		return "LPC10"
+	case CODEC_G729:
+		return "G729"
+	case CODEC_SPEEX:
+		return "SPEEX"
+	case CODEC_ILBC:
+		return "ILBC"
+	case CODEC_G726_AAL2:
+		return "G726_AAL2"
+	case CODEC_G722:
+		return "G722"
+	case CODEC_SIREN7:
+		return "SIREN7"
+	case CODEC_SIREN14:
+		return "SIREN14"
+	case CODEC_SLIN16:
+		return "SLIN16"
+	case CODEC_JPEG:
+		return "JPEG"
+	case CODEC_PNG:
+		return "PNG"
+	case CODEC_H261:
+		return "H261"
+	case CODEC_H263:
+		return "H263"
+	case CODEC_H263P:
+		return "H263P"
+	case CODEC_H264:
+		return "H264"
+	case CODEC_MP4:
+		return "MP4"
+	case CODEC_VP8:
+		return "VP8"
+	case CODEC_T140_RED:
+		return "T140_RED"
+	case CODEC_T140:
+		return "T140"
+	case CODEC_G719:
+		return "G719"
+	case CODEC_SPEEX16:
+		return "SPEEX16"
+	case CODEC_OPUS:
+		return "OPUS"
+	default:
+		return fmt.Sprintf("Unknown(%d)", c)
+	}
+}
+
+// HasCodec checks if the CodecMask has the given codec
+func (cm CodecMask) HasCodec(c Codec) bool {
+	return cm&(1<<c) != 0
+}
+
+// AddCodec adds a codec to the CodecMask
+func (cm CodecMask) AddCodec(c Codec) CodecMask {
+	return cm | (1 << c)
+}
+
+// RemoveCodec removes a codec from the CodecMask
+func (cm CodecMask) RemoveCodec(c Codec) CodecMask {
+	return cm &^ (1 << c)
+}
+
+// String returns the string representation of the CodecMask
+func (cm CodecMask) String() string {
+	res := ""
+	for c := 0; c < 64; c++ {
+		codec := Codec(c)
+		if cm.HasCodec(codec) {
+			res += codec.String() + " "
+		}
+	}
+	return res
+}
+
 // IE types
 const (
 	IECalledNumber    IEType = 1
@@ -292,30 +517,6 @@ const (
 	CtlUnhold     Subclass = 0x11
 )
 
-// Subclases for Voice frames
-const (
-	CodecG723      Subclass = 0x80
-	CodecGSM       Subclass = 0x81
-	CodecULAW      Subclass = 0x82
-	CodecALAW      Subclass = 0x83
-	CodecG726      Subclass = 0x84
-	CodecIMA       Subclass = 0x85
-	CodecSlinear16 Subclass = 0x86
-	CodecLPC10     Subclass = 0x87
-	CodecG729      Subclass = 0x88
-	CodecSpeex     Subclass = 0x89
-	CodecILBC      Subclass = 0x8a
-	CodecG726AAL2  Subclass = 0x8b
-	CodecG722      Subclass = 0x8c
-	CodecAMR       Subclass = 0x8d
-	CodecJPEG      Subclass = 0x90
-	CodecPNG       Subclass = 0x91
-	CodecH261      Subclass = 0x92
-	CodecH263      Subclass = 0x93
-	CodecH263P     Subclass = 0x94
-	CodecH264      Subclass = 0x95
-)
-
 // SubclassToString returns the string representation of the Subclass
 func SubclassToString(ft FrameType, sc Subclass) string {
 	switch ft {
@@ -388,7 +589,7 @@ func SubclassToString(ft FrameType, sc Subclass) string {
 		case IAXCtlTransfer:
 			return "Transfer"
 		default:
-			return fmt.Sprintf("Unknown(%d)", sc)
+			return fmt.Sprintf("Unknown(%v - %v)", ft, sc)
 		}
 	case FrmControl:
 		switch sc {
@@ -419,55 +620,12 @@ func SubclassToString(ft FrameType, sc Subclass) string {
 		case CtlUnhold:
 			return "Unhold"
 		default:
-			return fmt.Sprintf("Unknown(%d)", sc)
+			return fmt.Sprintf("Unknown(%v - %v)", ft, sc)
 		}
 	case FrmVoice:
-		switch sc {
-		case CodecG723:
-			return "G723"
-		case CodecGSM:
-			return "GSM"
-		case CodecULAW:
-			return "ULAW"
-		case CodecALAW:
-			return "ALAW"
-		case CodecG726:
-			return "G726"
-		case CodecIMA:
-			return "IMA"
-		case CodecSlinear16:
-			return "Slinear16"
-		case CodecLPC10:
-			return "LPC10"
-		case CodecG729:
-			return "G729"
-		case CodecSpeex:
-			return "Speex"
-		case CodecILBC:
-			return "ILBC"
-		case CodecG726AAL2:
-			return "G726AAL2"
-		case CodecG722:
-			return "G722"
-		case CodecAMR:
-			return "AMR"
-		case CodecJPEG:
-			return "JPEG"
-		case CodecPNG:
-			return "PNG"
-		case CodecH261:
-			return "H261"
-		case CodecH263:
-			return "H263"
-		case CodecH263P:
-			return "H263P"
-		case CodecH264:
-			return "H264"
-		default:
-			return fmt.Sprintf("Unknown(%d)", sc)
-		}
+		return Codec(sc).String()
 	default:
-		return fmt.Sprintf("Unknown(%d)", sc)
+		return fmt.Sprintf("Unknown(%v - %v)", ft, sc)
 	}
 }
 
@@ -848,6 +1006,11 @@ func (f *FullFrame) NeedACK() bool {
 		case IAXCtlNew, IAXCtlRegAck, IAXCtlRegRej, IAXCtlRegRel, IAXCtlPong, IAXCtlAccept, IAXCtlReject, IAXCtlHangup, IAXCtlAuthRep, IAXCtlTxRel:
 			return true
 		}
+	case FrmControl:
+		switch f.subclass {
+		case CtlHangup, CtlRinging, CtlAnswer, CtlBusy, CtlCongest, CtlFlash, CtlOption, CtlKey, CtlUnkey, CtlProgress, CtlProceeding, CtlHold, CtlUnhold:
+			return true
+		}
 	}
 	return false
 }
@@ -856,7 +1019,7 @@ func (f *FullFrame) NeedResponse() bool {
 	switch f.frameType {
 	case FrmIAXCtl:
 		switch f.subclass {
-		case IAXCtlRegReq, IAXCtlPing, IAXCtlPoke:
+		case IAXCtlRegReq, IAXCtlAuthReq, IAXCtlPing, IAXCtlPoke:
 			return true
 		}
 	}

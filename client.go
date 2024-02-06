@@ -79,6 +79,7 @@ type ClientOptions struct {
 	Password         string
 	RegInterval      time.Duration
 	CallEvtQueueSize int
+	CallFrmQueueSize int
 }
 
 // Client is an IAX2 client connection
@@ -202,14 +203,14 @@ func (c *Client) routeFrame(frame Frame) {
 	call, ok := c.remoteCallMap[frame.SrcCallNumber()]
 	c.lock.RUnlock()
 	if ok {
-		call.processFrame(frame)
+		call.pushFrame(frame)
 		return
 	}
 	c.lock.RLock()
 	call, ok = c.localCallMap[frame.DstCallNumber()]
 	c.lock.RUnlock()
 	if ok {
-		call.processFrame(frame)
+		call.pushFrame(frame)
 		return
 	}
 	if frame.IsFullFrame() { // Respond invalid full frames

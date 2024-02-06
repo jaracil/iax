@@ -93,24 +93,27 @@ type CallEvent interface {
 
 type CallEventHandler func(event CallEvent)
 type Call struct {
-	client       *Client
-	respQueue    chan *FullFrame
-	evtQueue     chan CallEvent
-	ctx          context.Context
-	cancel       context.CancelFunc
-	localCallID  uint16
-	remoteCallID uint16
-	oseqno       uint8
-	iseqno       uint8
-	firstFrameTs time.Time
-	isFirstFrame bool
-	sendLock     sync.Mutex
-	state        CallState
-	stateLock    sync.Mutex
-	eventHandler CallEventHandler
-	hangupCause  string
-	hangupCode   uint8
-	hangupRemote bool
+	client        *Client
+	respQueue     chan *FullFrame
+	evtQueue      chan CallEvent
+	frmQueue      chan Frame
+	ctx           context.Context
+	cancel        context.CancelFunc
+	localCallID   uint16
+	remoteCallID  uint16
+	oseqno        uint8
+	iseqno        uint8
+	firstFrameTs  time.Time
+	isFirstFrame  bool
+	sendLock      sync.Mutex
+	state         CallState
+	stateLock     sync.Mutex
+	hangupCause   string
+	hangupCode    uint8
+	hangupRemote  bool
+	calledNumber  string
+	callingNumber string
+
 	// specific to media
 	outgoing bool
 }
@@ -119,6 +122,10 @@ func NewCall(c *Client) *Call {
 	evtQueueSize := c.options.CallEvtQueueSize
 	if evtQueueSize == 0 {
 		evtQueueSize = 20
+	}
+	frmQueueSize := c.options.CallFrmQueueSize
+	if frmQueueSize == 0 {
+		frmQueueSize = 20
 	}
 
 	c.lock.Lock()
@@ -136,40 +143,42 @@ func NewCall(c *Client) *Call {
 				cancel:       cancel,
 				respQueue:    make(chan *FullFrame, 3),
 				evtQueue:     make(chan CallEvent, evtQueueSize),
+				frmQueue:     make(chan Frame, frmQueueSize),
 				localCallID:  c.callIDCount,
 				isFirstFrame: true,
 			}
 			call.setState(IdleCallState)
 			c.localCallMap[c.callIDCount] = call
+			go call.frameLoop()
 			return call
 		}
 	}
 }
 
-func (c *Call) eventLoop() {
+func (c *Call) frameLoop() {
 	for {
-		evt, ok := <-c.evtQueue
+		frame, ok := <-c.frmQueue
 		if !ok {
 			return
 		}
-		if c.eventHandler != nil {
-			c.eventHandler(evt)
-		}
-	}
-}
-
-// SetEventHandler sets the event handler for the call.
-// Only one handler can be set at a time.
-func (c *Call) SetEventHandler(handler CallEventHandler) {
-	if handler == nil {
-		c.eventHandler = handler
-		go c.eventLoop()
+		c.processFrame(frame)
 	}
 }
 
 // IsOutgoing returns true if the call was initiated by us.
 func (c *Call) IsOutgoing() bool {
 	return c.outgoing
+}
+
+func (c *Call) pushFrame(frame Frame) {
+	if c.State() == HangupCallState {
+		return
+	}
+	select {
+	case c.frmQueue <- frame:
+	default:
+		c.client.Log(ErrorLogLevel, "Call %d: Frame queue full", c.localCallID)
+	}
 }
 
 func (c *Call) processFrame(frame Frame) {
@@ -315,6 +324,19 @@ func (c *Call) waitResponse(timeout time.Duration) (*FullFrame, error) {
 	}
 }
 
+// WaitEvent waits for a call event to occur.
+// The timeout parameter specifies the maximum time to wait for an event.
+func (c *Call) WaitEvent(timeout time.Duration) (CallEvent, error) {
+	ctx, cancel := context.WithTimeout(c.ctx, timeout)
+	defer cancel()
+	select {
+	case evt := <-c.evtQueue:
+		return evt, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 // Destroy destroys the call and releases resources
 func (c *Call) Destroy() {
 	c.client.lock.Lock()
@@ -323,6 +345,7 @@ func (c *Call) Destroy() {
 	c.client.lock.Unlock()
 	close(c.respQueue)
 	close(c.evtQueue)
+	close(c.frmQueue)
 	c.cancel()
 }
 
