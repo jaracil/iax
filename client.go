@@ -1,6 +1,7 @@
 package iax
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/hex"
 	"errors"
@@ -70,6 +71,34 @@ func (ll LogLevel) String() string {
 	}
 }
 
+type ClientEventKind int
+
+const (
+	NewCallEventKind ClientEventKind = iota
+)
+
+func (et ClientEventKind) String() string {
+	switch et {
+	case NewCallEventKind:
+		return "NewCall"
+	default:
+		return "Unknown"
+	}
+}
+
+type NewCallEvent struct {
+	call      *Call
+	TimeStamp time.Time
+}
+
+func (e *NewCallEvent) Kind() ClientEventKind {
+	return NewCallEventKind
+}
+
+type ClientEvent interface {
+	Kind() ClientEventKind
+}
+
 // ClientOptions are the options for the client
 type ClientOptions struct {
 	Host             string
@@ -78,15 +107,40 @@ type ClientOptions struct {
 	Username         string
 	Password         string
 	RegInterval      time.Duration
+	EvtQueueSize     int
+	SendQueueSize    int
 	CallEvtQueueSize int
 	CallFrmQueueSize int
+	Ctx              context.Context
+}
+
+func (c *Client) pushEvent(evt ClientEvent) {
+	select {
+	case c.evtQueue <- evt:
+	default:
+		c.Log(ErrorLogLevel, "Client event queue full")
+	}
+}
+
+func (c *Client) WaitEvent(timeout time.Duration) (ClientEvent, error) {
+	ctx, cancel := context.WithTimeout(c.ctx, timeout)
+	defer cancel()
+	select {
+	case evt := <-c.evtQueue:
+		return evt, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // Client is an IAX2 client connection
 type Client struct {
 	options       *ClientOptions
 	conn          *net.UDPConn
+	ctx           context.Context
+	cancel        context.CancelFunc
 	sendQueue     chan Frame
+	evtQueue      chan ClientEvent
 	lock          sync.RWMutex
 	state         ClientState
 	callIDCount   uint16
@@ -213,9 +267,9 @@ func (c *Client) routeFrame(frame Frame) {
 		call.pushFrame(frame)
 		return
 	}
-	if frame.IsFullFrame() { // Respond invalid full frames
+	if frame.IsFullFrame() {
 		ffrm := frame.(*FullFrame)
-		if ffrm.DstCallNumber() != 0 {
+		if ffrm.DstCallNumber() != 0 { // Respond invalid full frames
 			oFrm := NewFullFrame(FrmIAXCtl, IAXCtlInval)
 			oFrm.SetTimestamp(ffrm.Timestamp())
 			oFrm.SetSrcCallNumber(ffrm.DstCallNumber())
@@ -223,6 +277,12 @@ func (c *Client) routeFrame(frame Frame) {
 			oFrm.SetISeqNo(ffrm.OSeqNo())
 			oFrm.SetOSeqNo(ffrm.ISeqNo())
 			c.SendFrame(oFrm)
+		} else {
+			if ffrm.FrameType() == FrmIAXCtl && ffrm.Subclass() == IAXCtlNew { // New incoming call
+				call := NewCall(c)
+				call.pushFrame(frame)
+				c.pushEvent(&NewCallEvent{call, time.Now()})
+			}
 		}
 	}
 }
@@ -276,8 +336,26 @@ func (c *Client) State() ClientState {
 
 // Connect connects to the server
 func (c *Client) Connect() error {
+	if c.state != Disconnected {
+		return ErrInvalidState
+	}
 	c.state = Connecting
-	c.sendQueue = make(chan Frame, 100)
+	ctx, cancel := context.WithCancel(context.Background())
+	if c.options.Ctx != nil {
+		ctx, cancel = context.WithCancel(c.options.Ctx)
+	}
+	evtQueueSize := c.options.EvtQueueSize
+	if evtQueueSize == 0 {
+		evtQueueSize = 20
+	}
+	sendQueueSize := c.options.SendQueueSize
+	if sendQueueSize == 0 {
+		sendQueueSize = 100
+	}
+	c.ctx = ctx
+	c.cancel = cancel
+	c.sendQueue = make(chan Frame, sendQueueSize)
+	c.evtQueue = make(chan ClientEvent, evtQueueSize)
 	c.localCallMap = make(map[uint16]*Call)
 	c.remoteCallMap = make(map[uint16]*Call)
 
@@ -338,6 +416,7 @@ func (c *Client) Connect() error {
 func (c *Client) Disconnect() {
 	if c.state == Connected || c.state == Connecting {
 		c.state = Disconnecting
+		// TODO: Hangup all calls
 		// TODO: send unregistration
 		c.state = Disconnected
 
@@ -346,10 +425,22 @@ func (c *Client) Disconnect() {
 			c.sendQueue = nil
 		}
 
+		if c.evtQueue != nil {
+			close(c.evtQueue)
+			c.evtQueue = nil
+		}
+
 		if c.conn != nil {
 			c.conn.Close()
 			c.conn = nil
 		}
+
+		c.cancel()
+
+		c.ctx = nil
+		c.cancel = nil
+		c.localCallMap = nil
+		c.remoteCallMap = nil
 	}
 }
 

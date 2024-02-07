@@ -2,6 +2,7 @@ package iax
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"sync"
 	"time"
@@ -11,6 +12,7 @@ type CallState int
 
 const (
 	IdleCallState CallState = iota
+	IncomingCallState
 	DialingCallState
 	RingingCallState
 	RingingBackCallState
@@ -22,6 +24,8 @@ func (cs CallState) String() string {
 	switch cs {
 	case IdleCallState:
 		return "Idle"
+	case IncomingCallState:
+		return "Incoming"
 	case DialingCallState:
 		return "Dialing"
 	case RingingCallState:
@@ -91,29 +95,35 @@ type CallEvent interface {
 	Kind() CallEventKind
 }
 
-type CallEventHandler func(event CallEvent)
-type Call struct {
-	client        *Client
-	respQueue     chan *FullFrame
-	evtQueue      chan CallEvent
-	frmQueue      chan Frame
-	ctx           context.Context
-	cancel        context.CancelFunc
-	localCallID   uint16
-	remoteCallID  uint16
-	oseqno        uint8
-	iseqno        uint8
-	firstFrameTs  time.Time
-	isFirstFrame  bool
-	sendLock      sync.Mutex
-	state         CallState
-	stateLock     sync.Mutex
-	hangupCause   string
-	hangupCode    uint8
-	hangupRemote  bool
-	calledNumber  string
-	callingNumber string
+type PeerInfo struct {
+	CalledNumber  string
+	CallingNumber string
+	HangupCause   string
+	HangupCode    uint8
+	HungupByPeer  bool
+	CodecCaps     CodecMask
+	CodecPrefs    []Codec
+	CodecFormat   Codec
+	Language      string
+}
 
+type Call struct {
+	client       *Client
+	respQueue    chan *FullFrame
+	evtQueue     chan CallEvent
+	frmQueue     chan Frame
+	ctx          context.Context
+	cancel       context.CancelFunc
+	localCallID  uint16
+	remoteCallID uint16
+	oseqno       uint8
+	iseqno       uint8
+	firstFrameTs time.Time
+	isFirstFrame bool
+	sendLock     sync.Mutex
+	state        CallState
+	stateLock    sync.Mutex
+	peer         PeerInfo
 	// specific to media
 	outgoing bool
 }
@@ -135,7 +145,7 @@ func NewCall(c *Client) *Call {
 		if c.callIDCount > 0x7fff {
 			c.callIDCount = 1
 		}
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(c.ctx)
 		if _, ok := c.localCallMap[c.callIDCount]; !ok {
 			call := &Call{
 				client:       c,
@@ -214,20 +224,21 @@ func (c *Call) processFrame(frame Frame) {
 			case IAXCtlHangup:
 				ie := ffrm.FindIE(IECause)
 				if ie != nil {
-					c.hangupCause = ie.AsString()
+					c.peer.HangupCause = ie.AsString()
 				}
 				ie = ffrm.FindIE(IECauseCode)
 				if ie != nil {
-					c.hangupCode = ie.AsUint8()
+					c.peer.HangupCode = ie.AsUint8()
 				}
-				c.hangupRemote = true
+				c.peer.HungupByPeer = true
 				c.setState(HangupCallState)
 				c.Destroy()
 			case IAXCtlNew:
 				if c.State() == IdleCallState {
-					c.setState(RingingCallState)
-
-				} else if c.State() == RingingCallState && ffrm.Retransmit() {
+					c.setState(IncomingCallState)
+					c.outgoing = false
+					go c.processIncomingCall(ffrm)
+				} else if c.State() == IncomingCallState && ffrm.Retransmit() {
 					c.client.Log(DebugLogLevel, "Call %d: Ignoring retransmitted new", c.localCallID)
 				} else {
 					c.client.Log(DebugLogLevel, "Call %d: Unexpected new", c.localCallID)
@@ -244,6 +255,47 @@ func (c *Call) processFrame(frame Frame) {
 		return
 
 	}
+}
+
+func (c *Call) processIncomingCall(frame *FullFrame) {
+	ie := frame.FindIE(IECallingNumber)
+	if ie != nil {
+		c.peer.CallingNumber = ie.AsString()
+	}
+	ie = frame.FindIE(IECalledNumber)
+	if ie != nil {
+		c.peer.CalledNumber = ie.AsString()
+	}
+	ie = frame.FindIE(IECapability2)
+	if ie != nil {
+		c.peer.CodecCaps = CodecMask(binary.BigEndian.Uint64(ie.AsBytes()[1:]))
+	} else {
+		ie = frame.FindIE(IECapability)
+		if ie != nil {
+			c.peer.CodecCaps = CodecMask(ie.AsUint32())
+		}
+	}
+	ie = frame.FindIE(IEFormat2)
+	if ie != nil {
+		mask := CodecMask(binary.BigEndian.Uint64(ie.AsBytes()[1:]))
+		c.peer.CodecFormat = mask.FirstCodec()
+	} else {
+		ie = frame.FindIE(IEFormat)
+		if ie != nil {
+			mask := CodecMask(ie.AsUint32())
+			c.peer.CodecFormat = mask.FirstCodec()
+		}
+	}
+	ie = frame.FindIE(IECodecPrefs)
+	if ie != nil {
+		c.peer.CodecPrefs = DecodePreferredCodecs(ie.AsString())
+	}
+	ie = frame.FindIE(IELanguage)
+	if ie != nil {
+		c.peer.Language = ie.AsString()
+	}
+	c.client.Log(DebugLogLevel, "Incoming call --> %+v", c.peer)
+
 }
 
 func (c *Call) SendMiniFrame(frame *MiniFrame) { // TODO: make it private

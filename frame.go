@@ -281,6 +281,17 @@ func (cm CodecMask) String() string {
 	return res
 }
 
+// String returns the string representation of the CodecMask
+func (cm CodecMask) FirstCodec() Codec {
+	for c := 0; c < 64; c++ {
+		codec := Codec(c)
+		if cm.HasCodec(codec) {
+			return codec
+		}
+	}
+	return CODEC_UNKNOWN
+}
+
 // IE types
 const (
 	IECalledNumber    IEType = 1
@@ -665,14 +676,19 @@ func (ief *IEFrame) IE() IEType {
 	return ief.ie
 }
 
+// AsUint64 returns the IE data as uint64
+func (ief *IEFrame) AsUint64() uint64 {
+	return binary.BigEndian.Uint64(ief.data)
+}
+
 // AsUint32 returns the IE data as uint32
 func (ief *IEFrame) AsUint32() uint32 {
-	return uint32(ief.data[0])<<24 | uint32(ief.data[1])<<16 | uint32(ief.data[2])<<8 | uint32(ief.data[3])
+	return binary.BigEndian.Uint32(ief.data)
 }
 
 // AsUint16 returns the IE data as uint16
 func (ief *IEFrame) AsUint16() uint16 {
-	return uint16(ief.data[0])<<8 | uint16(ief.data[1])
+	return binary.BigEndian.Uint16(ief.data)
 }
 
 // AsUint8 returns the IE data as uint8
