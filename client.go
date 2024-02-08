@@ -283,10 +283,19 @@ func (c *Client) routeFrame(frame Frame) {
 			oFrm.SetOSeqNo(ffrm.ISeqNo())
 			c.SendFrame(oFrm)
 		} else {
-			if ffrm.FrameType() == FrmIAXCtl && ffrm.Subclass() == IAXCtlNew { // New incoming call
-				call := NewCall(c)
-				call.pushFrame(frame)
-				c.pushEvent(&NewCallEvent{call, time.Now()})
+			if ffrm.FrameType() == FrmIAXCtl {
+				if ffrm.Subclass() == IAXCtlNew { // New incoming call
+					call := NewCall(c)
+					call.pushFrame(frame)
+					c.pushEvent(&NewCallEvent{call, time.Now()})
+				} else if ffrm.Subclass() == IAXCtlPoke {
+					call := NewCall(c)
+					call.pushFrame(frame)
+					go func() {
+						time.Sleep(time.Second)
+						call.Destroy()
+					}()
+				}
 			}
 		}
 	}

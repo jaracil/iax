@@ -246,6 +246,13 @@ func (c *Call) processFrame(frame Frame) {
 				} else {
 					c.log(DebugLogLevel, "Unexpected NEW frame")
 				}
+			case IAXCtlLagRqst:
+				frame := NewFullFrame(FrmIAXCtl, IAXCtlLagRply)
+				frame.SetTimestamp(ffrm.Timestamp())
+				go c.sendFullFrame(frame)
+			case IAXCtlPing, IAXCtlPoke:
+				frame := NewFullFrame(FrmIAXCtl, IAXCtlPong)
+				go c.sendFullFrame(frame)
 			}
 		case FrmDTMF:
 			c.pushEvent(&DTMFEvent{
@@ -344,7 +351,9 @@ func (c *Call) sendFullFrame(frame *FullFrame) (*FullFrame, error) {
 		c.isFirstFrame = false
 		frame.SetTimestamp(0)
 	} else {
-		frame.SetTimestamp(uint32(time.Since(c.firstFrameTs).Milliseconds()))
+		if frame.timestamp == 0 {
+			frame.SetTimestamp(uint32(time.Since(c.firstFrameTs).Milliseconds()))
+		}
 	}
 	frame.SetSrcCallNumber(c.localCallID)
 	frame.SetDstCallNumber(c.remoteCallID)
