@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"strconv"
@@ -87,7 +88,7 @@ func (et ClientEventKind) String() string {
 }
 
 type NewCallEvent struct {
-	call      *Call
+	Call      *Call
 	TimeStamp time.Time
 }
 
@@ -118,7 +119,7 @@ func (c *Client) pushEvent(evt ClientEvent) {
 	select {
 	case c.evtQueue <- evt:
 	default:
-		c.Log(ErrorLogLevel, "Client event queue full")
+		c.log(ErrorLogLevel, "Client event queue full")
 	}
 }
 
@@ -129,6 +130,9 @@ func (c *Client) WaitEvent(timeout time.Duration) (ClientEvent, error) {
 	case evt := <-c.evtQueue:
 		return evt, nil
 	case <-ctx.Done():
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, ErrTimeout
+		}
 		return nil, ctx.Err()
 	}
 }
@@ -161,9 +165,10 @@ func (c *Client) LogLevel() LogLevel {
 	return c.logLevel
 }
 
-// Log logs a message
-func (c *Client) Log(level LogLevel, format string, args ...interface{}) {
+// log logs a message
+func (c *Client) log(level LogLevel, format string, args ...interface{}) {
 	if c.logLevel != DisabledLogLevel && level >= c.logLevel {
+		format = fmt.Sprintf("[%s] %s", level, format)
 		log.Printf(format, args...)
 	}
 }
@@ -213,7 +218,7 @@ func (c *Client) Register() error {
 		md5Digest := md5.Sum([]byte(challenge + c.options.Password))
 		challengeResponse := hex.EncodeToString(md5Digest[:])
 
-		c.Log(DebugLogLevel, "Challenge: %s", challenge)
+		c.log(DebugLogLevel, "Challenge: %s", challenge)
 
 		oFrm = NewFullFrame(FrmIAXCtl, IAXCtlRegReq)
 		oFrm.AddIE(StringIE(IEUsername, c.options.Username))
@@ -251,7 +256,7 @@ func (c *Client) Register() error {
 // routeFrame routes a frame to the appropriate call
 func (c *Client) routeFrame(frame Frame) {
 	if c.logLevel > DisabledLogLevel && c.logLevel <= UltraDebugLogLevel {
-		c.Log(UltraDebugLogLevel, "RX %s", frame)
+		c.log(UltraDebugLogLevel, "RX %s", frame)
 	}
 	c.lock.RLock()
 	call, ok := c.remoteCallMap[frame.SrcCallNumber()]
@@ -313,7 +318,7 @@ func (c *Client) receiver() {
 
 		frm, err := DecodeFrame(data[:n])
 		if err != nil {
-			c.Log(ErrorLogLevel, "Error decoding frame: %s", err)
+			c.log(ErrorLogLevel, "Error decoding frame: %s", err)
 			continue
 		}
 		c.routeFrame(frm)
@@ -448,7 +453,7 @@ func (c *Client) Disconnect() {
 func (c *Client) SendFrame(frame Frame) {
 	if c.state != Disconnected {
 		if c.logLevel > DisabledLogLevel && c.logLevel <= UltraDebugLogLevel {
-			c.Log(UltraDebugLogLevel, "TX %s", frame)
+			c.log(UltraDebugLogLevel, "TX %s", frame)
 		}
 		c.sendQueue <- frame
 	}

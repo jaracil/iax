@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -105,6 +106,11 @@ type PeerInfo struct {
 	CodecPrefs    []Codec
 	CodecFormat   Codec
 	Language      string
+	ADSICPE       uint16
+	CallingTON    uint8
+	CallingTNS    uint16
+	CallingANI    string
+	PeerTime      time.Time
 }
 
 type Call struct {
@@ -187,7 +193,7 @@ func (c *Call) pushFrame(frame Frame) {
 	select {
 	case c.frmQueue <- frame:
 	default:
-		c.client.Log(ErrorLogLevel, "Call %d: Frame queue full", c.localCallID)
+		c.log(ErrorLogLevel, "Frame queue full")
 	}
 }
 
@@ -198,7 +204,7 @@ func (c *Call) processFrame(frame Frame) {
 	if frame.IsFullFrame() {
 		ffrm := frame.(*FullFrame)
 		if ffrm.OSeqNo() != c.iseqno {
-			c.client.Log(DebugLogLevel, "Call %d: Out of order frame received. Expected %d, got %d", c.localCallID, c.iseqno, ffrm.OSeqNo())
+			c.log(DebugLogLevel, "Out of order frame received. Expected %d, got %d", c.iseqno, ffrm.OSeqNo())
 			return
 		}
 		if !(ffrm.FrameType() == FrmIAXCtl && ffrm.Subclass() == IAXCtlAck) {
@@ -209,7 +215,7 @@ func (c *Call) processFrame(frame Frame) {
 			c.client.lock.Lock()
 			c.client.remoteCallMap[c.remoteCallID] = c
 			c.client.lock.Unlock()
-			c.client.Log(DebugLogLevel, "Call %d: Remote call ID set to %d", c.localCallID, c.remoteCallID)
+			c.log(DebugLogLevel, "Remote call ID set to %d", c.remoteCallID)
 		}
 		if ffrm.NeedACK() {
 			c.sendACK(ffrm)
@@ -232,16 +238,13 @@ func (c *Call) processFrame(frame Frame) {
 				}
 				c.peer.HungupByPeer = true
 				c.setState(HangupCallState)
-				c.Destroy()
 			case IAXCtlNew:
 				if c.State() == IdleCallState {
-					c.setState(IncomingCallState)
-					c.outgoing = false
-					go c.processIncomingCall(ffrm)
+					c.processIncomingCall(ffrm)
 				} else if c.State() == IncomingCallState && ffrm.Retransmit() {
-					c.client.Log(DebugLogLevel, "Call %d: Ignoring retransmitted new", c.localCallID)
+					c.log(DebugLogLevel, "Ignoring retransmitted NEW frame")
 				} else {
-					c.client.Log(DebugLogLevel, "Call %d: Unexpected new", c.localCallID)
+					c.log(DebugLogLevel, "Unexpected NEW frame")
 				}
 			}
 		case FrmDTMF:
@@ -294,8 +297,29 @@ func (c *Call) processIncomingCall(frame *FullFrame) {
 	if ie != nil {
 		c.peer.Language = ie.AsString()
 	}
-	c.client.Log(DebugLogLevel, "Incoming call --> %+v", c.peer)
-
+	ie = frame.FindIE(IEADSICPE)
+	if ie != nil {
+		c.peer.ADSICPE = ie.AsUint16()
+	}
+	ie = frame.FindIE(IECallingTON)
+	if ie != nil {
+		c.peer.CallingTON = ie.AsUint8()
+	}
+	ie = frame.FindIE(IECallingTNS)
+	if ie != nil {
+		c.peer.CallingTNS = ie.AsUint16()
+	}
+	ie = frame.FindIE(IECallingANI)
+	if ie != nil {
+		c.peer.CallingANI = ie.AsString()
+	}
+	ie = frame.FindIE(IEDateTime)
+	if ie != nil {
+		c.peer.PeerTime = IaxTimeToTime(ie.AsUint32())
+	}
+	c.outgoing = false
+	c.log(DebugLogLevel, "Peer info %+v", c.peer)
+	c.setState(IncomingCallState)
 }
 
 func (c *Call) SendMiniFrame(frame *MiniFrame) { // TODO: make it private
@@ -336,14 +360,14 @@ func (c *Call) sendFullFrame(frame *FullFrame) (*FullFrame, error) {
 			rFrm, err = c.waitResponse(time.Second)
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
-					c.client.Log(DebugLogLevel, "Call %d: Timeout waiting for response, retry %d", c.localCallID, retry)
+					c.log(DebugLogLevel, "Timeout waiting for response, retry %d", retry)
 					frame.SetRetransmit(true)
 					break
 				}
 				return nil, err
 			}
 			if rFrm.Subclass() == IAXCtlAck && frame.NeedResponse() {
-				c.client.Log(DebugLogLevel, "Call %d: Unexpected ACK", c.localCallID)
+				c.log(DebugLogLevel, "Unexpected ACK")
 				continue
 			}
 			break
@@ -385,6 +409,9 @@ func (c *Call) WaitEvent(timeout time.Duration) (CallEvent, error) {
 	case evt := <-c.evtQueue:
 		return evt, nil
 	case <-ctx.Done():
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, ErrTimeout
+		}
 		return nil, ctx.Err()
 	}
 }
@@ -405,7 +432,7 @@ func (c *Call) pushEvent(evt CallEvent) {
 	select {
 	case c.evtQueue <- evt:
 	default:
-		c.client.Log(ErrorLogLevel, "Call %d: Event queue full", c.localCallID)
+		c.log(ErrorLogLevel, "Event queue full")
 	}
 }
 
@@ -414,6 +441,43 @@ func (c *Call) State() CallState {
 	c.stateLock.Lock()
 	defer c.stateLock.Unlock()
 	return c.state
+}
+
+// Accept accepts the call.
+func (c *Call) Accept(codec Codec, auth bool) error {
+	if c.State() == IncomingCallState {
+		frame := NewFullFrame(FrmIAXCtl, IAXCtlAccept)
+		frame.AddIE(Uint32IE(IEFormat, uint32(codec.BitMask())))
+		_, err := c.sendFullFrame(frame)
+		if err != nil {
+			return err
+		}
+		c.setState(RingingCallState)
+	} else {
+		return ErrInvalidState
+	}
+	return nil
+}
+
+// Reject rejects the call.
+func (c *Call) Reject(cause string, code uint8) error {
+	if c.State() == IncomingCallState {
+		frame := NewFullFrame(FrmIAXCtl, IAXCtlReject)
+		if cause != "" {
+			frame.AddIE(StringIE(IECause, cause))
+		}
+		if code != 0 {
+			frame.AddIE(Uint8IE(IECauseCode, code))
+		}
+		_, err := c.sendFullFrame(frame)
+		c.setState(HangupCallState)
+		if err != nil {
+			return err
+		}
+	} else {
+		return ErrInvalidState
+	}
+	return nil
 }
 
 // Hangup hangs up the call.
@@ -434,7 +498,6 @@ func (c *Call) Hangup(cause string, code uint8) error {
 	} else {
 		return ErrInvalidState
 	}
-	c.Destroy()
 	return nil
 }
 
@@ -454,6 +517,10 @@ func (c *Call) SendDTMF(digit uint8) error {
 func (c *Call) setState(state CallState) {
 	c.stateLock.Lock()
 	defer c.stateLock.Unlock()
+	if c.state == HangupCallState { // Ignore state changes after hangup
+		c.log(ErrorLogLevel, "Already hung up")
+		return
+	}
 	if state != c.state {
 		oldState := c.state
 		c.state = state
@@ -462,5 +529,14 @@ func (c *Call) setState(state CallState) {
 			PrevState: oldState,
 			TimeStamp: time.Now(),
 		})
+		c.log(DebugLogLevel, "State change %v -> %v", oldState, state)
+		if c.state == HangupCallState {
+			c.Destroy()
+		}
 	}
+}
+
+func (c *Call) log(level LogLevel, format string, args ...interface{}) {
+	format = fmt.Sprintf("Call %d: %s", c.localCallID, format)
+	c.client.log(level, format, args...)
 }

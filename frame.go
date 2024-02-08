@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"time"
 )
 
 type FrameType uint8
@@ -296,7 +297,7 @@ func (cm CodecMask) FirstCodec() Codec {
 const (
 	IECalledNumber    IEType = 1
 	IECallingNumber   IEType = 2
-	IECallingAni      IEType = 3
+	IECallingANI      IEType = 3
 	IECallingName     IEType = 4
 	IECalledContext   IEType = 5
 	IEUsername        IEType = 6
@@ -359,7 +360,7 @@ func (ie IEType) String() string {
 		return "CalledNumber"
 	case IECallingNumber:
 		return "CallingNumber"
-	case IECallingAni:
+	case IECallingANI:
 		return "CallingAni"
 	case IECallingName:
 		return "CallingName"
@@ -1019,7 +1020,7 @@ func (f *FullFrame) NeedACK() bool {
 	switch f.frameType {
 	case FrmIAXCtl:
 		switch f.subclass {
-		case IAXCtlNew, IAXCtlRegAck, IAXCtlRegRej, IAXCtlRegRel, IAXCtlPong, IAXCtlAccept, IAXCtlReject, IAXCtlHangup, IAXCtlAuthRep, IAXCtlTxRel:
+		case IAXCtlRegAck, IAXCtlRegRej, IAXCtlRegRel, IAXCtlPong, IAXCtlAccept, IAXCtlReject, IAXCtlHangup, IAXCtlAuthRep, IAXCtlTxRel:
 			return true
 		}
 	case FrmControl:
@@ -1100,4 +1101,24 @@ func DecodeFrame(frame []byte) (Frame, error) {
 
 		return frm, nil
 	}
+}
+
+func IaxTimeToTime(t uint32) time.Time {
+	sec := (t & 0x1f) * 2
+	min := (t >> 5) & 0x3f
+	hour := (t >> 11) & 0x1f
+	day := (t >> 16) & 0x1f
+	month := (t >> 21) & 0x0f
+	year := (t >> 25) & 0x7f
+	return time.Date(int(year)+2000, time.Month(month), int(day), int(hour), int(min), int(sec), 0, time.UTC)
+}
+
+func TimeToIaxTime(t time.Time) uint32 {
+	year := uint32(t.Year() - 2000)
+	month := uint32(t.Month())
+	day := uint32(t.Day())
+	hour := uint32(t.Hour())
+	min := uint32(t.Minute())
+	sec := uint32(t.Second())
+	return (year << 25) | (month << 21) | (day << 16) | (hour << 11) | (min << 5) | (sec >> 1)
 }
