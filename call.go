@@ -479,6 +479,9 @@ func (c *Call) Accept(codec Codec, auth bool) error {
 
 		frame := NewFullFrame(FrmIAXCtl, IAXCtlAccept)
 		frame.AddIE(Uint32IE(IEFormat, uint32(codec.BitMask())))
+		buf := make([]byte, 9)
+		binary.BigEndian.PutUint64(buf[1:], uint64(codec.BitMask()))
+		frame.AddIE(BytesIE(IEFormat2, buf))
 		_, err := c.sendFullFrame(frame)
 		if err != nil {
 			return err
