@@ -581,16 +581,32 @@ func (c *Call) Answer() error {
 }
 
 // SendDTMF sends a DTMF digit to the peer.
-// Call must be in OnlineCallState.
-func (c *Call) SendDTMF(digit uint8) error {
-	if c.State() == OnlineCallState {
+// dur and gap are in milliseconds if dur is 0, it defaults to 150ms. If gap is 0, it defaults to 50ms.
+// if dur is negative, the digit is sent as a system default duration tone.
+// tones are sent sequentially with a gap of gap milliseconds.
+// Call state must be in OnlineCallState.
+func (c *Call) SendDTMF(digits string, dur, gap int) error {
+	if dur == 0 {
+		dur = 150
+	}
+	if gap <= 0 {
+		gap = 50
+	}
+	for _, digit := range digits {
+		if dur > 0 {
+			frame := NewFullFrame(FrmDTMFBegin, Subclass(digit))
+			_, err := c.sendFullFrame(frame)
+			if err != nil {
+				return err
+			}
+			time.Sleep(time.Millisecond * time.Duration(dur))
+		}
 		frame := NewFullFrame(FrmDTMFEnd, Subclass(digit))
 		_, err := c.sendFullFrame(frame)
 		if err != nil {
 			return err
 		}
-	} else {
-		return ErrInvalidState
+		time.Sleep(time.Millisecond * time.Duration(gap))
 	}
 	return nil
 }
