@@ -113,6 +113,7 @@ type ClientOptions struct {
 	CallEvtQueueSize int
 	CallFrmQueueSize int
 	Ctx              context.Context
+	DebugMiniframes  bool
 }
 
 func (c *Client) pushEvent(evt ClientEvent) {
@@ -256,7 +257,9 @@ func (c *Client) Register() error {
 // routeFrame routes a frame to the appropriate call
 func (c *Client) routeFrame(frame Frame) {
 	if c.logLevel > DisabledLogLevel && c.logLevel <= UltraDebugLogLevel {
-		c.log(UltraDebugLogLevel, "RX %s", frame)
+		if frame.IsFullFrame() || c.options.DebugMiniframes {
+			c.log(UltraDebugLogLevel, "RX %s", frame)
+		}
 	}
 	c.lock.RLock()
 	call, ok := c.remoteCallMap[frame.SrcCallNumber()]

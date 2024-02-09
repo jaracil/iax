@@ -12,4 +12,5 @@ var (
 	ErrUnsupportedAuthMethod = errors.New("unsupported authentication method")
 	ErrConnectionRejected    = errors.New("connection rejected")
 	ErrInvalidState          = errors.New("invalid state")
+	ErrAuthFailed            = errors.New("authentication failed")
 )

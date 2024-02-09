@@ -15,8 +15,7 @@ const (
 	IdleCallState CallState = iota
 	IncomingCallState
 	DialingCallState
-	RingingCallState
-	RingingBackCallState
+	AcceptCallState
 	OnlineCallState
 	HangupCallState
 )
@@ -29,10 +28,8 @@ func (cs CallState) String() string {
 		return "Incoming"
 	case DialingCallState:
 		return "Dialing"
-	case RingingCallState:
-		return "Ringing"
-	case RingingBackCallState:
-		return "RingingBack"
+	case AcceptCallState:
+		return "Accept"
 	case OnlineCallState:
 		return "Online"
 	case HangupCallState:
@@ -50,8 +47,8 @@ const (
 	DTMFEventKind
 )
 
-func (et CallEventKind) String() string {
-	switch et {
+func (ek CallEventKind) String() string {
+	switch ek {
 	case StateChangeEventKind:
 		return "StateChange"
 	case MediaEventKind:
@@ -84,7 +81,8 @@ func (e *MediaEvent) Kind() CallEventKind {
 }
 
 type DTMFEvent struct {
-	Digit     uint8
+	Digit     string
+	Start     bool
 	TimeStamp time.Time
 }
 
@@ -254,9 +252,10 @@ func (c *Call) processFrame(frame Frame) {
 				frame := NewFullFrame(FrmIAXCtl, IAXCtlPong)
 				go c.sendFullFrame(frame)
 			}
-		case FrmDTMF:
+		case FrmDTMFBegin, FrmDTMFEnd:
 			c.pushEvent(&DTMFEvent{
-				Digit:     uint8(ffrm.Subclass()),
+				Digit:     string(rune(ffrm.Subclass())),
+				Start:     ffrm.FrameType() == FrmDTMFBegin,
 				TimeStamp: time.Now(),
 			})
 		}
@@ -455,13 +454,36 @@ func (c *Call) State() CallState {
 // Accept accepts the call.
 func (c *Call) Accept(codec Codec, auth bool) error {
 	if c.State() == IncomingCallState {
+		if auth {
+			frame := NewFullFrame(FrmIAXCtl, IAXCtlAuthReq)
+			frame.AddIE(StringIE(IEUsername, c.client.options.Username))
+			frame.AddIE(Uint16IE(IEAuthMethods, 0x0002)) // MD5
+			nonce := makeNonce(16)
+			frame.AddIE(StringIE(IEChallenge, nonce))
+			rFrm, err := c.sendFullFrame(frame)
+			if err != nil {
+				c.setState(HangupCallState)
+				return err
+			}
+			ie := rFrm.FindIE(IEMD5Result)
+			if ie == nil {
+				c.setState(HangupCallState)
+				return ErrAuthFailed
+			}
+			goodResponse := challengeResponse(c.client.options.Password, nonce)
+			if ie.AsString() != goodResponse {
+				c.setState(HangupCallState)
+				return ErrAuthFailed
+			}
+		}
+
 		frame := NewFullFrame(FrmIAXCtl, IAXCtlAccept)
 		frame.AddIE(Uint32IE(IEFormat, uint32(codec.BitMask())))
 		_, err := c.sendFullFrame(frame)
 		if err != nil {
 			return err
 		}
-		c.setState(RingingCallState)
+		c.setState(AcceptCallState)
 	} else {
 		return ErrInvalidState
 	}
@@ -510,9 +532,56 @@ func (c *Call) Hangup(cause string, code uint8) error {
 	return nil
 }
 
+// SendRinging sends a ringing signal to the peer.
+// Call must be incomming and in AcceptCallState.
+func (c *Call) SendRinging() error {
+	if c.State() == AcceptCallState && !c.outgoing {
+		frame := NewFullFrame(FrmControl, CtlRinging)
+		_, err := c.sendFullFrame(frame)
+		if err != nil {
+			return err
+		}
+	} else {
+		return ErrInvalidState
+	}
+	return nil
+}
+
+// SendProceeding sends a proceeding signal to the peer.
+// Call must be incomming and in AcceptCallState.
+func (c *Call) SendProceeding() error {
+	if c.State() == AcceptCallState && !c.outgoing {
+		frame := NewFullFrame(FrmControl, CtlProceeding)
+		_, err := c.sendFullFrame(frame)
+		if err != nil {
+			return err
+		}
+	} else {
+		return ErrInvalidState
+	}
+	return nil
+}
+
+// Answer answers the call.
+// Call must be incomming and in AcceptCallState.
+func (c *Call) Answer() error {
+	if c.State() == AcceptCallState && !c.outgoing {
+		frame := NewFullFrame(FrmControl, CtlAnswer)
+		_, err := c.sendFullFrame(frame)
+		if err != nil {
+			return err
+		}
+	} else {
+		return ErrInvalidState
+	}
+	return nil
+}
+
+// SendDTMF sends a DTMF digit to the peer.
+// Call must be in OnlineCallState.
 func (c *Call) SendDTMF(digit uint8) error {
 	if c.State() == OnlineCallState {
-		frame := NewFullFrame(FrmDTMF, Subclass(digit))
+		frame := NewFullFrame(FrmDTMFEnd, Subclass(digit))
 		_, err := c.sendFullFrame(frame)
 		if err != nil {
 			return err

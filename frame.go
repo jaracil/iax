@@ -1,6 +1,8 @@
 package iax
 
 import (
+	"crypto/md5"
+	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
@@ -17,7 +19,7 @@ const (
 
 // Frame types
 const (
-	FrmDTMF         FrameType = 0x01
+	FrmDTMFEnd      FrameType = 0x01
 	FrmVoice        FrameType = 0x02
 	FrmVideo        FrameType = 0x03
 	FrmControl      FrameType = 0x04
@@ -27,13 +29,15 @@ const (
 	FrmImage        FrameType = 0x08
 	FrmHTML         FrameType = 0x09
 	FrmConfortNoise FrameType = 0x0a
+	FrmModem        FrameType = 0x0b
+	FrmDTMFBegin    FrameType = 0x0c
 )
 
 // FrameTypeToString returns the string representation of the FrameType
 func (ft FrameType) String() string {
 	switch ft {
-	case FrmDTMF:
-		return "DTMF"
+	case FrmDTMFEnd:
+		return "DTMFEnd"
 	case FrmVoice:
 		return "Voice"
 	case FrmVideo:
@@ -52,6 +56,10 @@ func (ft FrameType) String() string {
 		return "HTML"
 	case FrmConfortNoise:
 		return "ConfortNoise"
+	case FrmModem:
+		return "Modem"
+	case FrmDTMFBegin:
+		return "DTMFBegin"
 	default:
 		return fmt.Sprintf("Unknown(%d)", ft)
 	}
@@ -186,7 +194,13 @@ func (c Codec) Subclass() Subclass {
 
 // CodecFromSubclass returns the codec from the audio frame subclass
 func CodecFromSubclass(sc Subclass) Codec {
-	return Codec(sc - 0x80)
+	var msk CodecMask
+	if sc < 0x80 {
+		msk = CodecMask(sc)
+	} else {
+		msk = CodecMask(1 << (sc - 0x80))
+	}
+	return msk.FirstCodec()
 }
 
 // String returns the string representation of the codec
@@ -635,7 +649,9 @@ func SubclassToString(ft FrameType, sc Subclass) string {
 			return fmt.Sprintf("Unknown(%v - %v)", ft, sc)
 		}
 	case FrmVoice:
-		return Codec(sc).String()
+		return CodecFromSubclass(sc).String()
+	case FrmDTMFBegin, FrmDTMFEnd:
+		return string(rune(sc))
 	default:
 		return fmt.Sprintf("Unknown(%v - %v)", ft, sc)
 	}
@@ -1008,7 +1024,7 @@ func (f *FullFrame) IsResponse() bool {
 	switch f.frameType {
 	case FrmIAXCtl:
 		switch f.subclass {
-		case IAXCtlRegAck, IAXCtlRegRej, IAXCtlRegAuth, IAXCtlPong, IAXCtlAck:
+		case IAXCtlRegAck, IAXCtlRegRej, IAXCtlRegAuth, IAXCtlPong, IAXCtlAck, IAXCtlAuthRep:
 			return true
 		}
 	}
@@ -1020,7 +1036,7 @@ func (f *FullFrame) NeedACK() bool {
 	switch f.frameType {
 	case FrmIAXCtl:
 		switch f.subclass {
-		case IAXCtlRegAck, IAXCtlRegRej, IAXCtlRegRel, IAXCtlPong, IAXCtlAccept, IAXCtlReject, IAXCtlHangup, IAXCtlAuthRep, IAXCtlTxRel, IAXCtlLagRply:
+		case IAXCtlRegAck, IAXCtlRegRej, IAXCtlRegRel, IAXCtlPong, IAXCtlAccept, IAXCtlReject, IAXCtlHangup, IAXCtlTxRel, IAXCtlLagRply:
 			return true
 		}
 	case FrmControl:
@@ -1028,6 +1044,8 @@ func (f *FullFrame) NeedACK() bool {
 		case CtlHangup, CtlRinging, CtlAnswer, CtlBusy, CtlCongest, CtlFlash, CtlOption, CtlKey, CtlUnkey, CtlProgress, CtlProceeding, CtlHold, CtlUnhold:
 			return true
 		}
+	case FrmVoice, FrmDTMFBegin, FrmDTMFEnd, FrmModem, FrmText, FrmImage, FrmVideo, FrmHTML, FrmConfortNoise, FrmNull:
+		return true
 	}
 	return false
 }
@@ -1121,4 +1139,16 @@ func TimeToIaxTime(t time.Time) uint32 {
 	min := uint32(t.Minute())
 	sec := uint32(t.Second())
 	return (year << 25) | (month << 21) | (day << 16) | (hour << 11) | (min << 5) | (sec >> 1)
+}
+
+func makeNonce(n int) string {
+	b := make([]byte, n)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func challengeResponse(password, nonce string) string {
+	md5Digest := md5.Sum([]byte(nonce + password))
+	return hex.EncodeToString(md5Digest[:])
+
 }
