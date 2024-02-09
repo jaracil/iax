@@ -424,8 +424,8 @@ func (c *Call) WaitEvent(timeout time.Duration) (CallEvent, error) {
 	}
 }
 
-// Destroy destroys the call and releases resources
-func (c *Call) Destroy() {
+// destroy destroys the call and releases resources
+func (c *Call) destroy() {
 	c.client.lock.Lock()
 	delete(c.client.localCallMap, c.localCallID)
 	delete(c.client.remoteCallMap, c.remoteCallID)
@@ -514,21 +514,20 @@ func (c *Call) Reject(cause string, code uint8) error {
 	return nil
 }
 
-// Hangup hangs up the call.
+// Hangup hangs up the call and frees resources.
 func (c *Call) Hangup(cause string, code uint8) error {
 	if c.State() != HangupCallState {
-		frame := NewFullFrame(FrmIAXCtl, IAXCtlHangup)
-		if cause != "" {
-			frame.AddIE(StringIE(IECause, cause))
+		if c.State() != IdleCallState {
+			frame := NewFullFrame(FrmIAXCtl, IAXCtlHangup)
+			if cause != "" {
+				frame.AddIE(StringIE(IECause, cause))
+			}
+			if code != 0 {
+				frame.AddIE(Uint8IE(IECauseCode, code))
+			}
+			c.sendFullFrame(frame)
 		}
-		if code != 0 {
-			frame.AddIE(Uint8IE(IECauseCode, code))
-		}
-		_, err := c.sendFullFrame(frame)
 		c.setState(HangupCallState)
-		if err != nil {
-			return err
-		}
 	} else {
 		return ErrInvalidState
 	}
@@ -628,7 +627,7 @@ func (c *Call) setState(state CallState) {
 		})
 		c.log(DebugLogLevel, "State change %v -> %v", oldState, state)
 		if c.state == HangupCallState {
-			c.Destroy()
+			c.destroy()
 		}
 	}
 }

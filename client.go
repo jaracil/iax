@@ -183,7 +183,7 @@ func (c *Client) schedRegister() {
 func (c *Client) Register() error {
 
 	call := NewCall(c)
-	defer call.Destroy()
+	defer call.Hangup("", 0)
 
 	oFrm := NewFullFrame(FrmIAXCtl, IAXCtlRegReq)
 	oFrm.AddIE(StringIE(IEUsername, c.options.Username))
@@ -296,7 +296,7 @@ func (c *Client) routeFrame(frame Frame) {
 					call.pushFrame(frame)
 					go func() {
 						time.Sleep(time.Second)
-						call.Destroy()
+						call.Hangup("", 0)
 					}()
 				}
 			}
