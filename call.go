@@ -585,6 +585,17 @@ func (c *Call) Answer() error {
 	return nil
 }
 
+// SendPing sends a ping to the peer.
+// returns pong frame or error.
+func (c *Call) SendPing() (*FullFrame, error) {
+	frame := NewFullFrame(FrmIAXCtl, IAXCtlPing)
+	rFrm, err := c.sendFullFrame(frame)
+	if err != nil {
+		return nil, err
+	}
+	return rFrm, nil
+}
+
 // SendDTMF sends a DTMF digit to the peer.
 // dur and gap are in milliseconds if dur is 0, it defaults to 150ms. If gap is 0, it defaults to 50ms.
 // if dur is negative, the digit is sent as a system default duration tone.
