@@ -596,6 +596,21 @@ func (c *Call) SendPing() (*FullFrame, error) {
 	return rFrm, nil
 }
 
+// SendLagRqst sends a lag request to the peer.
+// returns the lag time or error.
+func (c *Call) SendLagRqst() (time.Duration, error) {
+	frame := NewFullFrame(FrmIAXCtl, IAXCtlLagRqst)
+	rFrm, err := c.sendFullFrame(frame)
+	if err != nil {
+		return 0, err
+	}
+	if rFrm.FrameType() != FrmIAXCtl || rFrm.Subclass() != IAXCtlLagRply {
+		return 0, ErrUnexpectedFrameType
+	}
+	sentTs := c.creationTs.Add(time.Millisecond * time.Duration(rFrm.Timestamp()))
+	return time.Since(sentTs), nil
+}
+
 // SendDTMF sends a DTMF digit to the peer.
 // dur and gap are in milliseconds if dur is 0, it defaults to 150ms. If gap is 0, it defaults to 50ms.
 // if dur is negative, the digit is sent as a system default duration tone.
