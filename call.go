@@ -122,8 +122,7 @@ type Call struct {
 	remoteCallID uint16
 	oseqno       uint8
 	iseqno       uint8
-	firstFrameTs time.Time
-	isFirstFrame bool
+	creationTs   time.Time
 	sendLock     sync.Mutex
 	state        CallState
 	stateLock    sync.Mutex
@@ -152,14 +151,14 @@ func NewCall(c *Client) *Call {
 		ctx, cancel := context.WithCancel(c.ctx)
 		if _, ok := c.localCallMap[c.callIDCount]; !ok {
 			call := &Call{
-				client:       c,
-				ctx:          ctx,
-				cancel:       cancel,
-				respQueue:    make(chan *FullFrame, 3),
-				evtQueue:     make(chan CallEvent, evtQueueSize),
-				frmQueue:     make(chan Frame, frmQueueSize),
-				localCallID:  c.callIDCount,
-				isFirstFrame: true,
+				client:      c,
+				ctx:         ctx,
+				cancel:      cancel,
+				respQueue:   make(chan *FullFrame, 3),
+				evtQueue:    make(chan CallEvent, evtQueueSize),
+				frmQueue:    make(chan Frame, frmQueueSize),
+				localCallID: c.callIDCount,
+				creationTs:  time.Now(),
 			}
 			call.setState(IdleCallState)
 			c.localCallMap[c.callIDCount] = call
@@ -202,7 +201,14 @@ func (c *Call) processFrame(frame Frame) {
 	if frame.IsFullFrame() {
 		ffrm := frame.(*FullFrame)
 		if ffrm.OSeqNo() != c.iseqno {
-			c.log(DebugLogLevel, "Out of order frame received. Expected %d, got %d", c.iseqno, ffrm.OSeqNo())
+			if ffrm.Retransmit() && ffrm.OSeqNo() == c.iseqno-1 {
+				c.log(DebugLogLevel, "Retransmitted frame received")
+				if ffrm.NeedACK() {
+					c.sendACK(ffrm)
+				}
+			} else {
+				c.log(DebugLogLevel, "Out of order frame received. Expected %d, got %d", c.iseqno, ffrm.OSeqNo())
+			}
 			return
 		}
 		if !(ffrm.FrameType() == FrmIAXCtl && ffrm.Subclass() == IAXCtlAck) {
@@ -330,7 +336,7 @@ func (c *Call) processIncomingCall(frame *FullFrame) {
 
 func (c *Call) SendMiniFrame(frame *MiniFrame) { // TODO: make it private
 	frame.SetSrcCallNumber(c.localCallID)
-	frame.SetTimestamp(uint32(time.Since(c.firstFrameTs).Milliseconds()))
+	frame.SetTimestamp(uint32(time.Since(c.creationTs).Milliseconds()))
 	c.client.SendFrame(frame)
 }
 
@@ -345,14 +351,8 @@ func (c *Call) sendFullFrame(frame *FullFrame) (*FullFrame, error) {
 			emptyQueue = true
 		}
 	}
-	if c.isFirstFrame {
-		c.firstFrameTs = time.Now()
-		c.isFirstFrame = false
-		frame.SetTimestamp(0)
-	} else {
-		if frame.timestamp == 0 {
-			frame.SetTimestamp(uint32(time.Since(c.firstFrameTs).Milliseconds()))
-		}
+	if frame.timestamp == 0 {
+		frame.SetTimestamp(uint32(time.Since(c.creationTs).Milliseconds()))
 	}
 	frame.SetSrcCallNumber(c.localCallID)
 	frame.SetDstCallNumber(c.remoteCallID)
@@ -360,12 +360,12 @@ func (c *Call) sendFullFrame(frame *FullFrame) (*FullFrame, error) {
 	c.oseqno++
 	frame.SetISeqNo(c.iseqno)
 
-	for retry := 1; retry <= 2; retry++ {
+	for retry := 1; retry <= 5; retry++ {
 		c.client.SendFrame(frame)
 		var rFrm *FullFrame
 		var err error
 		for {
-			rFrm, err = c.waitResponse(time.Second)
+			rFrm, err = c.waitResponse(time.Millisecond * 100)
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
 					c.log(DebugLogLevel, "Timeout waiting for response, retry %d", retry)
@@ -374,9 +374,14 @@ func (c *Call) sendFullFrame(frame *FullFrame) (*FullFrame, error) {
 				}
 				return nil, err
 			}
-			if rFrm.Subclass() == IAXCtlAck && frame.NeedResponse() {
-				c.log(DebugLogLevel, "Unexpected ACK")
-				continue
+			if rFrm.FrameType() == FrmIAXCtl && rFrm.Subclass() == IAXCtlAck {
+				if !frame.NeedACK() {
+					c.log(DebugLogLevel, "Unexpected ACK")
+					continue
+				}
+				if frame.Timestamp() != rFrm.Timestamp() {
+					c.log(DebugLogLevel, "Unexpected ACK timestamp")
+				}
 			}
 			break
 		}
@@ -573,6 +578,7 @@ func (c *Call) Answer() error {
 		if err != nil {
 			return err
 		}
+		c.setState(OnlineCallState)
 	} else {
 		return ErrInvalidState
 	}
