@@ -180,6 +180,20 @@ func (c *Client) schedRegister() {
 	}
 }
 
+func (c *Client) Poke() (*FullFrame, error) {
+	call := NewCall(c)
+	defer call.Hangup("", 0)
+	oFrm := NewFullFrame(FrmIAXCtl, IAXCtlPoke)
+	rfrm, err := call.sendFullFrame(oFrm)
+	if err != nil {
+		return nil, err
+	}
+	if rfrm.FrameType() != FrmIAXCtl || rfrm.Subclass() != IAXCtlPong {
+		return nil, ErrUnexpectedFrameType
+	}
+	return rfrm, nil
+}
+
 func (c *Client) Register() error {
 
 	call := NewCall(c)
