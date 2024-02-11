@@ -108,6 +108,7 @@ type ClientOptions struct {
 	Username         string
 	Password         string
 	RegInterval      time.Duration
+	FrameTimeout     time.Duration
 	EvtQueueSize     int
 	SendQueueSize    int
 	CallEvtQueueSize int

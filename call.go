@@ -364,8 +364,12 @@ func (c *Call) sendFullFrame(frame *FullFrame) (*FullFrame, error) {
 		c.client.SendFrame(frame)
 		var rFrm *FullFrame
 		var err error
+		frameTimeout := c.client.options.FrameTimeout
+		if frameTimeout == 0 {
+			frameTimeout = time.Millisecond * 100
+		}
 		for {
-			rFrm, err = c.waitResponse(time.Millisecond * 100)
+			rFrm, err = c.waitResponse(frameTimeout)
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
 					c.log(DebugLogLevel, "Timeout waiting for response, retry %d", retry)
