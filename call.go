@@ -72,7 +72,7 @@ func (e *StateChangeEvent) Kind() CallEventKind {
 
 type MediaEvent struct {
 	Data      []byte
-	Codec     uint64
+	Codec     Codec
 	TimeStamp time.Time
 }
 
@@ -103,6 +103,7 @@ type PeerInfo struct {
 	CodecCaps     CodecMask
 	CodecPrefs    []Codec
 	CodecFormat   Codec
+	CodecInUse    Codec
 	Language      string
 	ADSICPE       uint16
 	CallingTON    uint8
@@ -116,6 +117,7 @@ type Call struct {
 	respQueue    chan *FullFrame
 	evtQueue     chan CallEvent
 	frmQueue     chan Frame
+	mediaQueue   chan *MediaEvent
 	ctx          context.Context
 	cancel       context.CancelFunc
 	localCallID  uint16
@@ -124,11 +126,11 @@ type Call struct {
 	iseqno       uint8
 	creationTs   time.Time
 	sendLock     sync.Mutex
+	raceLock     sync.Mutex
 	state        CallState
-	stateLock    sync.Mutex
 	peer         PeerInfo
-	// specific to media
-	outgoing bool
+	outgoing     bool
+	audioStarted bool
 }
 
 func NewCall(c *Client) *Call {
@@ -139,6 +141,10 @@ func NewCall(c *Client) *Call {
 	frmQueueSize := c.options.CallFrmQueueSize
 	if frmQueueSize == 0 {
 		frmQueueSize = 20
+	}
+	audioQueueSize := c.options.CallMediaQueueSize
+	if audioQueueSize == 0 {
+		audioQueueSize = 20
 	}
 
 	c.lock.Lock()
@@ -157,6 +163,7 @@ func NewCall(c *Client) *Call {
 				respQueue:   make(chan *FullFrame, 3),
 				evtQueue:    make(chan CallEvent, evtQueueSize),
 				frmQueue:    make(chan Frame, frmQueueSize),
+				mediaQueue:  make(chan *MediaEvent, audioQueueSize),
 				localCallID: c.callIDCount,
 				creationTs:  time.Now(),
 			}
@@ -176,6 +183,44 @@ func (c *Call) frameLoop() {
 		}
 		c.processFrame(frame)
 	}
+}
+
+func (c *Call) audioLoop() {
+	startTime := time.Now()
+	lastFrameCnt := 0
+	for c.State() != HangupCallState {
+		FrameCnt := int(time.Since(startTime) / 20 * time.Millisecond) // 20ms
+		if FrameCnt > lastFrameCnt {
+			lastFrameCnt = FrameCnt
+		} else {
+			time.Sleep(time.Millisecond * 10)
+			continue
+		}
+		select {
+		case _, ok := <-c.mediaQueue:
+			if !ok {
+				return
+			}
+			// TODO: send audio
+		default:
+		}
+	}
+}
+
+func (c *Call) SendMediaEvent(ev *MediaEvent) error {
+	if c.State() != OnlineCallState || c.State() != AcceptCallState {
+		return ErrInvalidState
+	}
+	c.mediaQueue <- ev
+	if !c.audioStarted {
+		c.raceLock.Lock()
+		defer c.raceLock.Unlock()
+		if !c.audioStarted {
+			c.audioStarted = true
+			go c.audioLoop()
+		}
+	}
+	return nil
 }
 
 // IsOutgoing returns true if the call was initiated by us.
@@ -264,11 +309,21 @@ func (c *Call) processFrame(frame Frame) {
 				Start:     ffrm.FrameType() == FrmDTMFBegin,
 				TimeStamp: time.Now(),
 			})
+		case FrmVoice:
+			codec := CodecFromSubclass(ffrm.Subclass())
+			c.peer.CodecInUse = codec
+			c.pushEvent(&MediaEvent{
+				Data:      ffrm.Payload(),
+				Codec:     codec,
+				TimeStamp: time.Now(),
+			})
 		}
 	} else {
-		// Enqueue miniframes media event
-		return
-
+		c.pushEvent(&MediaEvent{
+			Data:      frame.Payload(),
+			Codec:     c.peer.CodecInUse,
+			TimeStamp: time.Now(),
+		})
 	}
 }
 
@@ -442,6 +497,7 @@ func (c *Call) destroy() {
 	close(c.respQueue)
 	close(c.evtQueue)
 	close(c.frmQueue)
+	close(c.mediaQueue)
 	c.cancel()
 }
 
@@ -455,8 +511,8 @@ func (c *Call) pushEvent(evt CallEvent) {
 
 // State returns the call state
 func (c *Call) State() CallState {
-	c.stateLock.Lock()
-	defer c.stateLock.Unlock()
+	c.raceLock.Lock()
+	defer c.raceLock.Unlock()
 	return c.state
 }
 
@@ -647,8 +703,8 @@ func (c *Call) SendDTMF(digits string, dur, gap int) error {
 }
 
 func (c *Call) setState(state CallState) {
-	c.stateLock.Lock()
-	defer c.stateLock.Unlock()
+	c.raceLock.Lock()
+	defer c.raceLock.Unlock()
 	if c.state == HangupCallState { // Ignore state changes after hangup
 		c.log(ErrorLogLevel, "Already hung up")
 		return

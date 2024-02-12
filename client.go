@@ -102,19 +102,20 @@ type ClientEvent interface {
 
 // ClientOptions are the options for the client
 type ClientOptions struct {
-	Host             string
-	Port             int
-	BindPort         int
-	Username         string
-	Password         string
-	RegInterval      time.Duration
-	FrameTimeout     time.Duration
-	EvtQueueSize     int
-	SendQueueSize    int
-	CallEvtQueueSize int
-	CallFrmQueueSize int
-	Ctx              context.Context
-	DebugMiniframes  bool
+	Host               string
+	Port               int
+	BindPort           int
+	Username           string
+	Password           string
+	RegInterval        time.Duration
+	FrameTimeout       time.Duration
+	EvtQueueSize       int
+	SendQueueSize      int
+	CallEvtQueueSize   int
+	CallFrmQueueSize   int
+	CallMediaQueueSize int
+	Ctx                context.Context
+	DebugMiniframes    bool
 }
 
 func (c *Client) pushEvent(evt ClientEvent) {
