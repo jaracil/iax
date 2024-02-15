@@ -182,6 +182,27 @@ func DecodePreferredCodecs(s string) []Codec {
 	return res
 }
 
+func (c Codec) FrameSize() int {
+	switch c {
+	case CODEC_SLIN:
+		return 320
+	case CODEC_SLIN16:
+		return 640
+	case CODEC_ULAW, CODEC_ALAW:
+		return 160
+	case CODEC_G729:
+		return 20
+	case CODEC_GSM:
+		return 33
+	case CODEC_G723:
+		return 24
+	case CODEC_G726:
+		return 160
+	default:
+		return 160
+	}
+}
+
 // BitMask returns the bitmask for the codec
 func (c Codec) BitMask() CodecMask {
 	return 1 << c
@@ -189,6 +210,10 @@ func (c Codec) BitMask() CodecMask {
 
 // Subclass returns the subclass audio frame for the codec
 func (c Codec) Subclass() Subclass {
+	mask := c.BitMask()
+	if mask < 0x80 {
+		return Subclass(mask)
+	}
 	return Subclass(0x80 + c)
 }
 
@@ -649,7 +674,7 @@ func SubclassToString(ft FrameType, sc Subclass) string {
 			return fmt.Sprintf("Unknown(%v - %v)", ft, sc)
 		}
 	case FrmVoice:
-		return CodecFromSubclass(sc).String()
+		return fmt.Sprintf("%s (%d)", CodecFromSubclass(sc).String(), sc)
 	case FrmDTMFBegin, FrmDTMFEnd:
 		return string(rune(sc))
 	default:
@@ -749,11 +774,9 @@ type MiniFrame struct {
 }
 
 // NewMiniFrame returns a new MiniFrame
-func NewMiniFrame(sourceCallNumber uint16, timestamp uint32, payload []byte) *MiniFrame {
+func NewMiniFrame(payload []byte) *MiniFrame {
 	return &MiniFrame{
-		sourceCallNumber: sourceCallNumber,
-		timestamp:        uint16(timestamp),
-		payload:          payload,
+		payload: payload,
 	}
 }
 

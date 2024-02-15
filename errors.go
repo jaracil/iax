@@ -13,4 +13,5 @@ var (
 	ErrConnectionRejected    = errors.New("connection rejected")
 	ErrInvalidState          = errors.New("invalid state")
 	ErrAuthFailed            = errors.New("authentication failed")
+	ErrResourceBusy          = errors.New("resource busy")
 )

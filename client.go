@@ -116,6 +116,7 @@ type ClientOptions struct {
 	CallMediaQueueSize int
 	Ctx                context.Context
 	DebugMiniframes    bool
+	DefaultClockSource ClockSource
 }
 
 func (c *Client) pushEvent(evt ClientEvent) {
@@ -481,7 +482,9 @@ func (c *Client) Disconnect() {
 func (c *Client) SendFrame(frame Frame) {
 	if c.state != Disconnected {
 		if c.logLevel > DisabledLogLevel && c.logLevel <= UltraDebugLogLevel {
-			c.log(UltraDebugLogLevel, "TX %s", frame)
+			if frame.IsFullFrame() || c.options.DebugMiniframes {
+				c.log(UltraDebugLogLevel, "TX %s", frame)
+			}
 		}
 		c.sendQueue <- frame
 	}
