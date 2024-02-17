@@ -83,10 +83,9 @@ func (e *StateChangeEvent) SetTimestamp(ts time.Time) {
 }
 
 type MediaEvent struct {
-	Data        []byte
-	Codec       Codec
-	AsyncSource bool
-	ts          time.Time
+	Data  []byte
+	Codec Codec
+	ts    time.Time
 }
 
 func (e *MediaEvent) Kind() CallEventKind {
@@ -186,12 +185,8 @@ type Call struct {
 	state        CallState
 	peer         PeerInfo
 	outgoing     bool
-	mediaStarted bool
 	mediaPlaying bool
 	mediaStop    bool
-	syncChan     chan struct{}
-	clkSource    ClockSource
-	clkRunning   bool
 }
 
 func NewCall(c *Client) *Call {
@@ -224,9 +219,7 @@ func NewCall(c *Client) *Call {
 				respQueue:   make(chan *FullFrame, 3),
 				evtQueue:    make(chan CallEvent, evtQueueSize),
 				frmQueue:    make(chan Frame, frmQueueSize),
-				mediaQueue:  make(chan *MediaEvent, mediaQueueSize),
-				syncChan:    make(chan struct{}, mediaQueueSize),
-				clkSource:   c.options.DefaultClockSource,
+				mediaQueue:  make(chan *MediaEvent),
 				localCallID: c.callIDCount,
 				creationTs:  time.Now(),
 			}
@@ -236,14 +229,6 @@ func NewCall(c *Client) *Call {
 			return call
 		}
 	}
-}
-
-func (c *Call) ClockSource() ClockSource {
-	return c.clkSource
-}
-
-func (c *Call) SetClockSource(cs ClockSource) {
-	c.clkSource = cs
 }
 
 func (c *Call) frameLoop() {
@@ -260,76 +245,35 @@ func (c *Call) frameLoop() {
 	}
 }
 
-func (c *Call) mediaTick() {
-	if !c.mediaStarted {
-		c.raceLock.Lock()
-		if !c.mediaStarted {
-			c.mediaStarted = true
-			go c.mediaOutputLoop()
-		}
-		c.raceLock.Unlock()
-	}
-	select {
-	case c.syncChan <- struct{}{}:
-	default:
-		c.log(ErrorLogLevel, "Sync channel full.........")
-	}
-}
-
-func (c *Call) clkSoftwareGen() {
-	tk := time.NewTicker(time.Millisecond * 20)
-	defer func() {
-		tk.Stop()
-		c.raceLock.Lock()
-		c.clkRunning = false
-		c.raceLock.Unlock()
-	}()
-	for c.clkSource == ClockSourceSoftware {
-		select {
-		case <-c.ctx.Done():
-			return
-		case <-tk.C:
-			c.mediaTick()
-		}
-	}
-}
-
 func (c *Call) mediaOutputLoop() {
 	needFullFrame := true
-	underflowCount := 0
 	for c.State() != HangupCallState {
+		var ev *MediaEvent
 		select {
-		case <-c.syncChan:
+		case ev = <-c.mediaQueue:
 		case <-c.ctx.Done():
 			return
 		}
-
-		select {
-		case ev := <-c.mediaQueue:
-			if needFullFrame {
-				needFullFrame = false
-				ffrm := NewFullFrame(FrmVoice, ev.Codec.Subclass())
-				ffrm.SetPayload(ev.Data)
-				_, err := c.sendFullFrame(ffrm)
-				if err != nil {
-					c.log(ErrorLogLevel, "Error sending voice full-frame: %s", err)
-					c.setState(HangupCallState)
-					return
-				}
-			} else {
-				mfrm := NewMiniFrame(ev.Data)
-				c.sendMiniFrame(mfrm)
+		if needFullFrame {
+			needFullFrame = false
+			ffrm := NewFullFrame(FrmVoice, ev.Codec.Subclass())
+			ffrm.SetPayload(ev.Data)
+			_, err := c.sendFullFrame(ffrm)
+			if err != nil {
+				c.log(ErrorLogLevel, "Error sending voice full-frame: %s", err)
+				c.setState(HangupCallState)
+				return
 			}
-		default:
-			underflowCount++
-			if underflowCount < 10 {
-				c.log(DebugLogLevel, "Output media buffer underflow %d", underflowCount)
-			}
+		} else {
+			mfrm := NewMiniFrame(ev.Data)
+			c.sendMiniFrame(mfrm)
 		}
+
 	}
 }
 
 func (c *Call) PlayMedia(r io.Reader, codec Codec) error {
+	c.log(DebugLogLevel, "Playing media with codec %s size: %d", codec, codec.FrameSize())
 	c.raceLock.Lock()
 	if c.mediaPlaying {
 		c.raceLock.Unlock()
@@ -352,7 +296,12 @@ func (c *Call) PlayMedia(r io.Reader, codec Codec) error {
 	}()
 	frameSize := codec.FrameSize()
 	buf := make([]byte, frameSize)
+	nextDeadline := time.Now().Add(time.Millisecond * 20)
 	for !c.mediaStop && c.State() != HangupCallState {
+		if time.Now().Before(nextDeadline) {
+			time.Sleep(time.Until(nextDeadline))
+		}
+		nextDeadline = nextDeadline.Add(time.Millisecond * 20)
 		n, err := r.Read(buf)
 		if err != nil {
 			if err == io.EOF {
@@ -363,16 +312,15 @@ func (c *Call) PlayMedia(r io.Reader, codec Codec) error {
 		if n != frameSize {
 			break
 		}
-		err = c.SendMedia(&MediaEvent{
-			Data:        buf[:n],
-			Codec:       codec,
-			AsyncSource: true,
-		})
-		if err != nil {
-			return err
+		select {
+		case c.mediaQueue <- &MediaEvent{
+			Data:  buf,
+			Codec: codec,
+		}:
+		case <-c.ctx.Done():
+			return c.ctx.Err()
 		}
 	}
-	time.Sleep(time.Millisecond * 40) // Improve this
 	return nil
 }
 
@@ -388,45 +336,13 @@ func (c *Call) SendMedia(ev *MediaEvent) error {
 	if c.State() != OnlineCallState && c.State() != AcceptCallState {
 		return ErrInvalidState
 	}
-
-	if c.clkSource == ClockSourceSoftware && !c.clkRunning {
-		c.raceLock.Lock()
-		if !c.clkRunning {
-			c.clkRunning = true
-			go c.clkSoftwareGen()
-		}
-		c.raceLock.Unlock()
+	if c.mediaPlaying {
+		return nil // Drop sync source events when playing media
 	}
-
-	if !ev.AsyncSource {
-		if c.clkSource == ClockSourceLocal {
-			c.mediaTick()
-		}
-		if c.mediaPlaying {
-			return nil // Drop sync source events when playing media
-		}
-		skip := false
-		for !skip {
-			select {
-			case c.mediaQueue <- ev:
-				skip = true
-			default:
-				// Remove old events
-				for len(c.mediaQueue) > cap(c.mediaQueue)/2 {
-					select {
-					case <-c.mediaQueue:
-					default:
-					}
-				}
-				c.log(DebugLogLevel, "Output media buffer overflow, removing oldest events")
-			}
-		}
-	} else {
-		select {
-		case c.mediaQueue <- ev: // Block when async source
-		case <-c.ctx.Done():
-			return c.ctx.Err()
-		}
+	select {
+	case c.mediaQueue <- ev: // Block when async source
+	case <-c.ctx.Done():
+		return c.ctx.Err()
 	}
 	return nil
 }
@@ -523,18 +439,14 @@ func (c *Call) processFrame(frame Frame) {
 				Data:  ffrm.Payload(),
 				Codec: codec,
 			})
-			if c.clkSource == ClockSourcePeer {
-				c.mediaTick()
-			}
+			// fmt.Printf("RX Full Voice Timestamp: %d\n", frame.Timestamp())
 		}
 	} else {
 		c.pushEvent(&MediaEvent{
 			Data:  frame.Payload(),
 			Codec: c.peer.CodecInUse,
 		})
-		if c.clkSource == ClockSourcePeer {
-			c.mediaTick()
-		}
+		// fmt.Printf("RX Miniframe Timestamp: %d\n", frame.Timestamp())
 	}
 }
 
@@ -606,6 +518,7 @@ func (c *Call) sendMiniFrame(frame *MiniFrame) { // TODO: make it private
 		frame.SetTimestamp(uint32(time.Since(c.creationTs).Milliseconds()))
 	}
 	c.client.SendFrame(frame)
+	// fmt.Printf("  TX Miniframe Timestamp: %d\n", frame.Timestamp())
 }
 
 func (c *Call) sendFullFrame(frame *FullFrame) (*FullFrame, error) {
@@ -930,7 +843,10 @@ func (c *Call) setState(state CallState) {
 			PrevState: oldState,
 		})
 		c.log(DebugLogLevel, "State change %v -> %v", oldState, state)
-		if c.state == HangupCallState {
+		switch c.state {
+		case AcceptCallState:
+			go c.mediaOutputLoop()
+		case HangupCallState:
 			c.destroy()
 		}
 	}

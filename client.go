@@ -116,7 +116,6 @@ type ClientOptions struct {
 	CallMediaQueueSize int
 	Ctx                context.Context
 	DebugMiniframes    bool
-	DefaultClockSource ClockSource
 }
 
 func (c *Client) pushEvent(evt ClientEvent) {
