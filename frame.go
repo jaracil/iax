@@ -720,31 +720,49 @@ func (ief *IEFrame) IE() IEType {
 
 // AsUint64 returns the IE data as uint64
 func (ief *IEFrame) AsUint64() uint64 {
+	if ief == nil {
+		return 0
+	}
 	return binary.BigEndian.Uint64(ief.data)
 }
 
 // AsUint32 returns the IE data as uint32
 func (ief *IEFrame) AsUint32() uint32 {
+	if ief == nil {
+		return 0
+	}
 	return binary.BigEndian.Uint32(ief.data)
 }
 
 // AsUint16 returns the IE data as uint16
 func (ief *IEFrame) AsUint16() uint16 {
+	if ief == nil {
+		return 0
+	}
 	return binary.BigEndian.Uint16(ief.data)
 }
 
 // AsUint8 returns the IE data as uint8
 func (ief *IEFrame) AsUint8() uint8 {
+	if ief == nil {
+		return 0
+	}
 	return uint8(ief.data[0])
 }
 
 // AsString returns the IE data as string
 func (ief *IEFrame) AsString() string {
+	if ief == nil {
+		return ""
+	}
 	return string(ief.data)
 }
 
 // AsBytes returns the IE data as []byte
 func (ief *IEFrame) AsBytes() []byte {
+	if ief == nil {
+		return nil
+	}
 	return ief.data
 }
 
@@ -1047,7 +1065,7 @@ func (f *FullFrame) IsResponse() bool {
 	switch f.frameType {
 	case FrmIAXCtl:
 		switch f.subclass {
-		case IAXCtlRegAck, IAXCtlRegRej, IAXCtlRegAuth, IAXCtlPong, IAXCtlAck, IAXCtlAuthRep, IAXCtlLagRply:
+		case IAXCtlRegAck, IAXCtlRegRej, IAXCtlRegAuth, IAXCtlPong, IAXCtlAck, IAXCtlAuthRep, IAXCtlLagRply, IAXCtlReject:
 			return true
 		}
 	}

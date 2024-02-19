@@ -187,6 +187,7 @@ type Call struct {
 	outgoing     bool
 	mediaPlaying bool
 	mediaStop    bool
+	killErr      error
 }
 
 func NewCall(c *Client) *Call {
@@ -198,37 +199,37 @@ func NewCall(c *Client) *Call {
 	if frmQueueSize == 0 {
 		frmQueueSize = 20
 	}
-	mediaQueueSize := c.options.CallMediaQueueSize
-	if mediaQueueSize == 0 {
-		mediaQueueSize = 10
+
+	ctx, cancel := context.WithCancel(c.ctx)
+	call := &Call{
+		client:     c,
+		ctx:        ctx,
+		cancel:     cancel,
+		respQueue:  make(chan *FullFrame, 3),
+		evtQueue:   make(chan CallEvent, evtQueueSize),
+		frmQueue:   make(chan Frame, frmQueueSize),
+		mediaQueue: make(chan *MediaEvent),
+		creationTs: time.Now(),
 	}
 
 	c.lock.Lock()
-	defer c.lock.Unlock()
 	for {
 		c.callIDCount++
 		if c.callIDCount > 0x7fff {
 			c.callIDCount = 1
 		}
-		ctx, cancel := context.WithCancel(c.ctx)
 		if _, ok := c.localCallMap[c.callIDCount]; !ok {
-			call := &Call{
-				client:      c,
-				ctx:         ctx,
-				cancel:      cancel,
-				respQueue:   make(chan *FullFrame, 3),
-				evtQueue:    make(chan CallEvent, evtQueueSize),
-				frmQueue:    make(chan Frame, frmQueueSize),
-				mediaQueue:  make(chan *MediaEvent),
-				localCallID: c.callIDCount,
-				creationTs:  time.Now(),
-			}
-			call.setState(IdleCallState)
-			c.localCallMap[c.callIDCount] = call
-			go call.frameLoop()
-			return call
+			break
 		}
 	}
+	call.localCallID = c.callIDCount
+	c.localCallMap[c.callIDCount] = call
+	c.lock.Unlock()
+
+	call.log(DebugLogLevel, "Created")
+	call.setState(IdleCallState)
+	go call.frameLoop()
+	return call
 }
 
 func (c *Call) frameLoop() {
@@ -261,7 +262,7 @@ func (c *Call) mediaOutputLoop() {
 			_, err := c.sendFullFrame(ffrm)
 			if err != nil {
 				c.log(ErrorLogLevel, "Error sending voice full-frame: %s", err)
-				c.setState(HangupCallState)
+				c.kill(err)
 				return
 			}
 		} else {
@@ -273,7 +274,7 @@ func (c *Call) mediaOutputLoop() {
 }
 
 func (c *Call) PlayMedia(r io.Reader, codec Codec) error {
-	c.log(DebugLogLevel, "Playing media with codec %s size: %d", codec, codec.FrameSize())
+	c.log(DebugLogLevel, "Playing media with codec %s frame size: %d", codec, codec.FrameSize())
 	c.raceLock.Lock()
 	if c.mediaPlaying {
 		c.raceLock.Unlock()
@@ -369,6 +370,11 @@ func (c *Call) processFrame(frame Frame) {
 	}
 	if frame.IsFullFrame() {
 		ffrm := frame.(*FullFrame)
+		if c.client.logLevel > DisabledLogLevel {
+			if c.client.logLevel <= DebugLogLevel {
+				c.log(DebugLogLevel, "<< RX frame, type %s, subclass %s, retransmit %t", ffrm.FrameType(), SubclassToString(ffrm.FrameType(), ffrm.Subclass()), ffrm.Retransmit())
+			}
+		}
 		if ffrm.OSeqNo() != c.iseqno {
 			if ffrm.Retransmit() && ffrm.OSeqNo() == c.iseqno-1 {
 				c.log(DebugLogLevel, "Retransmitted frame received")
@@ -410,7 +416,7 @@ func (c *Call) processFrame(frame Frame) {
 					c.peer.HangupCode = ie.AsUint8()
 				}
 				c.peer.HungupByPeer = true
-				c.setState(HangupCallState)
+				c.kill(ErrRemoteHangup)
 			case IAXCtlNew:
 				if c.State() == IdleCallState {
 					c.processIncomingCall(ffrm)
@@ -542,6 +548,11 @@ func (c *Call) sendFullFrame(frame *FullFrame) (*FullFrame, error) {
 	frame.SetISeqNo(c.iseqno)
 
 	for retry := 1; retry <= 5; retry++ {
+		if c.client.logLevel > DisabledLogLevel {
+			if c.client.logLevel <= DebugLogLevel && frame.IsFullFrame() {
+				c.log(DebugLogLevel, ">> TX frame, type %s, subclass %s, retransmit %t", frame.FrameType(), SubclassToString(frame.FrameType(), frame.Subclass()), frame.Retransmit())
+			}
+		}
 		c.client.SendFrame(frame)
 		var rFrm *FullFrame
 		var err error
@@ -642,6 +653,11 @@ func (c *Call) State() CallState {
 	return s
 }
 
+// KillErr returns the error that caused the call to hang up.
+func (c *Call) KillErrCause() error {
+	return c.killErr
+}
+
 // Accept accepts the call.
 func (c *Call) Accept(codec Codec, auth bool) error {
 	if c.State() == IncomingCallState {
@@ -653,18 +669,10 @@ func (c *Call) Accept(codec Codec, auth bool) error {
 			frame.AddIE(StringIE(IEChallenge, nonce))
 			rFrm, err := c.sendFullFrame(frame)
 			if err != nil {
-				c.setState(HangupCallState)
-				return err
+				return c.kill(err)
 			}
-			ie := rFrm.FindIE(IEMD5Result)
-			if ie == nil {
-				c.setState(HangupCallState)
-				return ErrAuthFailed
-			}
-			goodResponse := challengeResponse(c.client.options.Password, nonce)
-			if ie.AsString() != goodResponse {
-				c.setState(HangupCallState)
-				return ErrAuthFailed
+			if rFrm.FindIE(IEMD5Result).AsString() != challengeResponse(c.client.options.Password, nonce) {
+				return c.kill(ErrAuthFailed)
 			}
 		}
 
@@ -673,13 +681,21 @@ func (c *Call) Accept(codec Codec, auth bool) error {
 		buf := make([]byte, 9)
 		binary.BigEndian.PutUint64(buf[1:], uint64(codec.BitMask()))
 		frame.AddIE(BytesIE(IEFormat2, buf))
-		_, err := c.sendFullFrame(frame)
+		rFrm, err := c.sendFullFrame(frame)
 		if err != nil {
-			return err
+			return c.kill(err)
+		}
+		if rFrm.FrameType() != FrmIAXCtl || rFrm.Subclass() != IAXCtlAck {
+			if rFrm.FrameType() == FrmIAXCtl && rFrm.Subclass() == IAXCtlReject {
+				cause := rFrm.FindIE(IECause).AsString()
+				code := rFrm.FindIE(IECauseCode).AsUint8()
+				return c.kill(fmt.Errorf("%w: %s (%d)", ErrRejected, cause, code))
+			}
+			return c.kill(ErrUnexpectedFrameType)
 		}
 		c.setState(AcceptCallState)
 	} else {
-		return ErrInvalidState
+		return c.kill(ErrInvalidState)
 	}
 	return nil
 }
@@ -695,7 +711,7 @@ func (c *Call) Reject(cause string, code uint8) error {
 			frame.AddIE(Uint8IE(IECauseCode, code))
 		}
 		_, err := c.sendFullFrame(frame)
-		c.setState(HangupCallState)
+		c.kill(ErrRejected)
 		if err != nil {
 			return err
 		}
@@ -703,6 +719,15 @@ func (c *Call) Reject(cause string, code uint8) error {
 		return ErrInvalidState
 	}
 	return nil
+}
+
+func (c *Call) kill(err error) error {
+	if c.killErr == nil {
+		c.killErr = err
+		c.log(DebugLogLevel, "Killed, cause \"%s\"", err)
+	}
+	c.setState(HangupCallState)
+	return err
 }
 
 // Hangup hangs up the call and frees resources.
@@ -718,9 +743,9 @@ func (c *Call) Hangup(cause string, code uint8) error {
 			}
 			c.sendFullFrame(frame)
 		}
-		c.setState(HangupCallState)
+		c.kill(fmt.Errorf("%w: cause \"%s\", code %d", ErrLocalHangup, cause, code))
 	} else {
-		return ErrInvalidState
+		return c.kill(ErrInvalidState)
 	}
 	return nil
 }
@@ -732,10 +757,10 @@ func (c *Call) SendRinging() error {
 		frame := NewFullFrame(FrmControl, CtlRinging)
 		_, err := c.sendFullFrame(frame)
 		if err != nil {
-			return err
+			return c.kill(err)
 		}
 	} else {
-		return ErrInvalidState
+		return c.kill(ErrInvalidState)
 	}
 	return nil
 }
@@ -747,10 +772,10 @@ func (c *Call) SendProceeding() error {
 		frame := NewFullFrame(FrmControl, CtlProceeding)
 		_, err := c.sendFullFrame(frame)
 		if err != nil {
-			return err
+			return c.kill(err)
 		}
 	} else {
-		return ErrInvalidState
+		return c.kill(ErrInvalidState)
 	}
 	return nil
 }
@@ -762,11 +787,11 @@ func (c *Call) Answer() error {
 		frame := NewFullFrame(FrmControl, CtlAnswer)
 		_, err := c.sendFullFrame(frame)
 		if err != nil {
-			return err
+			return c.kill(err)
 		}
 		c.setState(OnlineCallState)
 	} else {
-		return ErrInvalidState
+		return c.kill(ErrInvalidState)
 	}
 	return nil
 }
@@ -777,7 +802,7 @@ func (c *Call) SendPing() (*FullFrame, error) {
 	frame := NewFullFrame(FrmIAXCtl, IAXCtlPing)
 	rFrm, err := c.sendFullFrame(frame)
 	if err != nil {
-		return nil, err
+		return nil, c.kill(err)
 	}
 	return rFrm, nil
 }
@@ -788,10 +813,10 @@ func (c *Call) SendLagRqst() (time.Duration, error) {
 	frame := NewFullFrame(FrmIAXCtl, IAXCtlLagRqst)
 	rFrm, err := c.sendFullFrame(frame)
 	if err != nil {
-		return 0, err
+		return 0, c.kill(err)
 	}
 	if rFrm.FrameType() != FrmIAXCtl || rFrm.Subclass() != IAXCtlLagRply {
-		return 0, ErrUnexpectedFrameType
+		return 0, c.kill(ErrUnexpectedFrameType)
 	}
 	sentTs := c.creationTs.Add(time.Millisecond * time.Duration(rFrm.Timestamp()))
 	return time.Since(sentTs), nil
@@ -814,14 +839,14 @@ func (c *Call) SendDTMF(digits string, dur, gap int) error {
 			frame := NewFullFrame(FrmDTMFBegin, Subclass(digit))
 			_, err := c.sendFullFrame(frame)
 			if err != nil {
-				return err
+				return c.kill(err)
 			}
 			time.Sleep(time.Millisecond * time.Duration(dur))
 		}
 		frame := NewFullFrame(FrmDTMFEnd, Subclass(digit))
 		_, err := c.sendFullFrame(frame)
 		if err != nil {
-			return err
+			return c.kill(err)
 		}
 		time.Sleep(time.Millisecond * time.Duration(gap))
 	}

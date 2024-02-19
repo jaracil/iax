@@ -102,20 +102,19 @@ type ClientEvent interface {
 
 // ClientOptions are the options for the client
 type ClientOptions struct {
-	Host               string
-	Port               int
-	BindPort           int
-	Username           string
-	Password           string
-	RegInterval        time.Duration
-	FrameTimeout       time.Duration
-	EvtQueueSize       int
-	SendQueueSize      int
-	CallEvtQueueSize   int
-	CallFrmQueueSize   int
-	CallMediaQueueSize int
-	Ctx                context.Context
-	DebugMiniframes    bool
+	Host             string
+	Port             int
+	BindPort         int
+	Username         string
+	Password         string
+	RegInterval      time.Duration
+	FrameTimeout     time.Duration
+	EvtQueueSize     int
+	SendQueueSize    int
+	CallEvtQueueSize int
+	CallFrmQueueSize int
+	Ctx              context.Context
+	DebugMiniframes  bool
 }
 
 func (c *Client) pushEvent(evt ClientEvent) {
@@ -235,8 +234,6 @@ func (c *Client) Register() error {
 		md5Digest := md5.Sum([]byte(challenge + c.options.Password))
 		challengeResponse := hex.EncodeToString(md5Digest[:])
 
-		c.log(DebugLogLevel, "Challenge: %s", challenge)
-
 		oFrm = NewFullFrame(FrmIAXCtl, IAXCtlRegReq)
 		oFrm.AddIE(StringIE(IEUsername, c.options.Username))
 		oFrm.AddIE(Uint16IE(IERefresh, uint16(c.options.RegInterval.Seconds())))
@@ -264,7 +261,7 @@ func (c *Client) Register() error {
 		}
 
 		if rFrm.Subclass() == IAXCtlRegRej {
-			return ErrConnectionRejected
+			return ErrRejected
 		}
 	}
 	return errors.New("not implemented")
@@ -272,9 +269,11 @@ func (c *Client) Register() error {
 
 // routeFrame routes a frame to the appropriate call
 func (c *Client) routeFrame(frame Frame) {
-	if c.logLevel > DisabledLogLevel && c.logLevel <= UltraDebugLogLevel {
-		if frame.IsFullFrame() || c.options.DebugMiniframes {
-			c.log(UltraDebugLogLevel, "RX %s", frame)
+	if c.logLevel > DisabledLogLevel {
+		if c.logLevel <= UltraDebugLogLevel {
+			if frame.IsFullFrame() || c.options.DebugMiniframes {
+				c.log(UltraDebugLogLevel, "RX %s", frame)
+			}
 		}
 	}
 	c.lock.RLock()
@@ -480,9 +479,11 @@ func (c *Client) Disconnect() {
 // SendFrame sends a frame to the server
 func (c *Client) SendFrame(frame Frame) {
 	if c.state != Disconnected {
-		if c.logLevel > DisabledLogLevel && c.logLevel <= UltraDebugLogLevel {
-			if frame.IsFullFrame() || c.options.DebugMiniframes {
-				c.log(UltraDebugLogLevel, "TX %s", frame)
+		if c.logLevel > DisabledLogLevel {
+			if c.logLevel <= UltraDebugLogLevel {
+				if frame.IsFullFrame() || c.options.DebugMiniframes {
+					c.log(UltraDebugLogLevel, "TX %s", frame)
+				}
 			}
 		}
 		c.sendQueue <- frame
