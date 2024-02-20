@@ -64,21 +64,21 @@ func (ek CallEventKind) String() string {
 	}
 }
 
-type StateChangeEvent struct {
+type CallStateChangeEvent struct {
 	State     CallState
 	PrevState CallState
 	ts        time.Time
 }
 
-func (e *StateChangeEvent) Kind() CallEventKind {
+func (e *CallStateChangeEvent) Kind() CallEventKind {
 	return StateChangeEventKind
 }
 
-func (e *StateChangeEvent) Timestamp() time.Time {
+func (e *CallStateChangeEvent) Timestamp() time.Time {
 	return e.ts
 }
 
-func (e *StateChangeEvent) SetTimestamp(ts time.Time) {
+func (e *CallStateChangeEvent) SetTimestamp(ts time.Time) {
 	e.ts = ts
 }
 
@@ -609,6 +609,10 @@ func (c *Call) waitResponse(timeout time.Duration) (*FullFrame, error) {
 	}
 }
 
+func (c *Call) Client() *Client {
+	return c.client
+}
+
 // WaitEvent waits for a call event to occur.
 // The timeout parameter specifies the maximum time to wait for an event.
 func (c *Call) WaitEvent(timeout time.Duration) (CallEvent, error) {
@@ -863,7 +867,7 @@ func (c *Call) setState(state CallState) {
 	if state != c.state {
 		oldState := c.state
 		c.state = state
-		c.pushEvent(&StateChangeEvent{
+		c.pushEvent(&CallStateChangeEvent{
 			State:     state,
 			PrevState: oldState,
 		})

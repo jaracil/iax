@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -18,21 +17,18 @@ type ClientState int
 
 const (
 	Disconnected ClientState = iota
-	Disconnecting
 	Connected
-	Connecting
+	ShutingDown
 )
 
 func (cs ClientState) String() string {
 	switch cs {
 	case Disconnected:
 		return "Disconnected"
-	case Disconnecting:
-		return "Disconnecting"
 	case Connected:
 		return "Connected"
-	case Connecting:
-		return "Connecting"
+	case ShutingDown:
+		return "ShutingDown"
 	default:
 		return "Unknown"
 	}
@@ -75,29 +71,81 @@ func (ll LogLevel) String() string {
 type ClientEventKind int
 
 const (
-	NewCallEventKind ClientEventKind = iota
+	IncomingCallClientEvent ClientEventKind = iota
+	RegisterClientEvent
+	StateChangeClientEvent
 )
 
 func (et ClientEventKind) String() string {
 	switch et {
-	case NewCallEventKind:
-		return "NewCall"
+	case IncomingCallClientEvent:
+		return "IncomingCall"
+	case RegisterClientEvent:
+		return "Register"
+	case StateChangeClientEvent:
+		return "StateChange"
 	default:
 		return "Unknown"
 	}
 }
 
-type NewCallEvent struct {
+type IncomingCallEvent struct {
 	Call      *Call
 	TimeStamp time.Time
 }
 
-func (e *NewCallEvent) Kind() ClientEventKind {
-	return NewCallEventKind
+func (e *IncomingCallEvent) Timestamp() time.Time {
+	return e.TimeStamp
+}
+
+func (e *IncomingCallEvent) SetTimestamp(ts time.Time) {
+	e.TimeStamp = ts
+}
+
+func (e *IncomingCallEvent) Kind() ClientEventKind {
+	return IncomingCallClientEvent
+}
+
+type RegistrationEvent struct {
+	Registered bool
+	Cause      string
+	TimeStamp  time.Time
+}
+
+func (e *RegistrationEvent) Timestamp() time.Time {
+	return e.TimeStamp
+}
+
+func (e *RegistrationEvent) SetTimestamp(ts time.Time) {
+	e.TimeStamp = ts
+}
+
+func (e *RegistrationEvent) Kind() ClientEventKind {
+	return RegisterClientEvent
+}
+
+type ClientStateChangeEvent struct {
+	State     ClientState
+	PrevState ClientState
+	TimeStamp time.Time
+}
+
+func (e *ClientStateChangeEvent) Timestamp() time.Time {
+	return e.TimeStamp
+}
+
+func (e *ClientStateChangeEvent) SetTimestamp(ts time.Time) {
+	e.TimeStamp = ts
+}
+
+func (e *ClientStateChangeEvent) Kind() ClientEventKind {
+	return StateChangeClientEvent
 }
 
 type ClientEvent interface {
 	Kind() ClientEventKind
+	Timestamp() time.Time
+	SetTimestamp(time.Time)
 }
 
 // ClientOptions are the options for the client
@@ -118,6 +166,9 @@ type ClientOptions struct {
 }
 
 func (c *Client) pushEvent(evt ClientEvent) {
+	if evt.Timestamp().IsZero() {
+		evt.SetTimestamp(time.Now())
+	}
 	select {
 	case c.evtQueue <- evt:
 	default:
@@ -154,7 +205,11 @@ type Client struct {
 	remoteCallMap map[uint16]*Call
 	lastRegTime   time.Time
 	regInterval   time.Duration
+	registered    bool
 	logLevel      LogLevel
+	raceLock      sync.Mutex
+	lAddr         *net.UDPAddr
+	rAddr         *net.UDPAddr
 }
 
 // SetLogLevel sets the client log level
@@ -175,12 +230,6 @@ func (c *Client) log(level LogLevel, format string, args ...interface{}) {
 	}
 }
 
-func (c *Client) schedRegister() {
-	if c.state == Connected {
-		c.Register()
-	}
-}
-
 func (c *Client) Poke() (*FullFrame, error) {
 	call := NewCall(c)
 	defer call.Hangup("", 0)
@@ -195,10 +244,35 @@ func (c *Client) Poke() (*FullFrame, error) {
 	return rfrm, nil
 }
 
-func (c *Client) Register() error {
+func (c *Client) registerLoop() {
+	next := time.Duration(0)
+	c.regInterval = c.options.RegInterval
+	for c.State() != Disconnected {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-time.After(next):
+			err := c.register()
+			if err != nil {
+				c.registered = false
+				c.pushEvent(&RegistrationEvent{
+					Registered: false,
+					Cause:      err.Error(),
+				})
+			} else {
+				c.registered = true
+				c.pushEvent(&RegistrationEvent{
+					Registered: true,
+				})
+			}
+			next = c.regInterval - time.Second*2
+		}
+	}
+}
 
+func (c *Client) register() error {
 	call := NewCall(c)
-	defer call.Hangup("", 0)
+	defer call.kill(fmt.Errorf("no longer needed"))
 
 	oFrm := NewFullFrame(FrmIAXCtl, IAXCtlRegReq)
 	oFrm.AddIE(StringIE(IEUsername, c.options.Username))
@@ -255,8 +329,6 @@ func (c *Client) Register() error {
 			} else {
 				c.regInterval = time.Second * 60
 			}
-			// Schedule next registration
-			time.AfterFunc(c.regInterval-(5*time.Second), c.schedRegister)
 			return nil
 		}
 
@@ -264,7 +336,7 @@ func (c *Client) Register() error {
 			return ErrRejected
 		}
 	}
-	return errors.New("not implemented")
+	return ErrUnexpectedFrameType
 }
 
 // routeFrame routes a frame to the appropriate call
@@ -303,16 +375,22 @@ func (c *Client) routeFrame(frame Frame) {
 		} else {
 			if ffrm.FrameType() == FrmIAXCtl {
 				if ffrm.Subclass() == IAXCtlNew { // New incoming call
-					call := NewCall(c)
-					call.pushFrame(frame)
-					c.pushEvent(&NewCallEvent{call, time.Now()})
+					if c.State() == Connected {
+						call := NewCall(c)
+						call.pushFrame(frame)
+						c.pushEvent(&IncomingCallEvent{
+							Call: call,
+						})
+					}
 				} else if ffrm.Subclass() == IAXCtlPoke {
-					call := NewCall(c)
-					call.pushFrame(frame)
-					go func() {
-						time.Sleep(time.Second)
-						call.Hangup("", 0)
-					}()
+					if c.State() == Connected {
+						call := NewCall(c)
+						call.pushFrame(frame)
+						go func() {
+							time.Sleep(time.Second)
+							call.kill(fmt.Errorf("no longer needed"))
+						}()
+					}
 				}
 			}
 		}
@@ -321,28 +399,30 @@ func (c *Client) routeFrame(frame Frame) {
 
 // sender sends frames to the server
 func (c *Client) sender() {
-	for c.state != Disconnected {
-		frm, ok := <-c.sendQueue
-		if !ok {
-			break
-		}
-		data := frm.Encode()
-		n, err := c.conn.Write(data)
-		if err != nil || n != len(data) {
-			break
+	for c.State() != Disconnected {
+		select {
+		case frm := <-c.sendQueue:
+			data := frm.Encode()
+			n, err := c.conn.WriteToUDP(data, c.rAddr)
+			if err != nil || n != len(data) {
+				c.Disconnect()
+				return
+			}
+		case <-c.ctx.Done():
+			c.Disconnect()
+			return
 		}
 	}
 }
 
 // receiver receives frames from the server
 func (c *Client) receiver() {
-	for c.state != Disconnected {
+	for c.State() != Disconnected {
 		data := make([]byte, FrameMaxSize)
 		n, err := c.conn.Read(data)
 		if err != nil {
 			break
 		}
-
 		frm, err := DecodeFrame(data[:n])
 		if err != nil {
 			c.log(ErrorLogLevel, "Error decoding frame: %s", err)
@@ -350,7 +430,7 @@ func (c *Client) receiver() {
 		}
 		c.routeFrame(frm)
 	}
-
+	c.Disconnect()
 }
 
 // NewClient creates a new IAX2 client
@@ -363,19 +443,23 @@ func NewClient(options *ClientOptions) *Client {
 
 // State returns the client state
 func (c *Client) State() ClientState {
+	c.raceLock.Lock()
+	defer c.raceLock.Unlock()
 	return c.state
 }
 
 // Connect connects to the server
 func (c *Client) Connect() error {
-	if c.state != Disconnected {
+	if c.State() != Disconnected {
 		return ErrInvalidState
 	}
-	c.state = Connecting
-	ctx, cancel := context.WithCancel(context.Background())
+
 	if c.options.Ctx != nil {
-		ctx, cancel = context.WithCancel(c.options.Ctx)
+		c.ctx, c.cancel = context.WithCancel(c.options.Ctx)
+	} else {
+		c.ctx, c.cancel = context.WithCancel(context.Background())
 	}
+
 	evtQueueSize := c.options.EvtQueueSize
 	if evtQueueSize == 0 {
 		evtQueueSize = 20
@@ -384,21 +468,12 @@ func (c *Client) Connect() error {
 	if sendQueueSize == 0 {
 		sendQueueSize = 100
 	}
-	c.ctx = ctx
-	c.cancel = cancel
 	c.sendQueue = make(chan Frame, sendQueueSize)
 	c.evtQueue = make(chan ClientEvent, evtQueueSize)
 	c.localCallMap = make(map[uint16]*Call)
 	c.remoteCallMap = make(map[uint16]*Call)
 
-	defer func() {
-		if c.state == Connecting {
-			c.Disconnect()
-		}
-	}()
-
 	var err error
-	var rAddr *net.UDPAddr = nil
 	if c.options.Host != "" {
 		if c.options.Port == 0 {
 			c.options.Port = 4569 // Default IAX port
@@ -408,77 +483,66 @@ func (c *Client) Connect() error {
 			rAddrStr = rAddrStr + ":" + strconv.Itoa(c.options.Port)
 		}
 
-		rAddr, err = net.ResolveUDPAddr("udp", rAddrStr)
+		c.rAddr, err = net.ResolveUDPAddr("udp", rAddrStr)
 		if err != nil {
 			return err
 		}
 	}
 
-	var lAddr *net.UDPAddr = nil
 	if c.options.BindPort != 0 {
 		lAddrStr := "0.0.0.0:" + strconv.Itoa(c.options.BindPort)
-		lAddr, err = net.ResolveUDPAddr("udp", lAddrStr)
+		c.lAddr, err = net.ResolveUDPAddr("udp", lAddrStr)
 		if err != nil {
 			return err
 		}
 	}
-
-	conn, err := net.DialUDP("udp", lAddr, rAddr)
+	conn, err := net.ListenUDP("udp", c.lAddr)
 	if err != nil {
 		return err
 	}
-
 	c.conn = conn
+	c.setState(Connected)
 	go c.sender()
 	go c.receiver()
-
 	if c.options.RegInterval > 0 {
-		err = c.Register()
-		if err != nil {
-			return err
+		go c.registerLoop()
+	}
+	return nil
+}
+
+func (c *Client) ShutDown() {
+	c.setState(ShutingDown)
+	for retry := 0; retry < 3; retry++ {
+		for _, call := range c.localCallMap {
+			call.Hangup("shutdown", 0)
+		}
+		time.Sleep(time.Second)
+		if len(c.localCallMap) == 0 {
+			break
 		}
 	}
-
-	c.state = Connected
-
-	return nil
+	// TODO: Unregister if registered
+	c.Disconnect()
 }
 
 // Disconnect disconnects from the server
 func (c *Client) Disconnect() {
-	if c.state == Connected || c.state == Connecting {
-		c.state = Disconnecting
-		// TODO: Hangup all calls
-		// TODO: send unregistration
-		c.state = Disconnected
-
-		if c.sendQueue != nil {
-			close(c.sendQueue)
-			c.sendQueue = nil
-		}
-
-		if c.evtQueue != nil {
-			close(c.evtQueue)
-			c.evtQueue = nil
-		}
+	if c.State() == Connected || c.State() == ShutingDown {
+		c.setState(Disconnected)
 
 		if c.conn != nil {
 			c.conn.Close()
-			c.conn = nil
 		}
 
-		c.cancel()
-
-		c.ctx = nil
-		c.cancel = nil
-		c.localCallMap = nil
-		c.remoteCallMap = nil
+		if c.cancel != nil {
+			c.cancel()
+		}
 	}
 }
 
 // SendFrame sends a frame to the server
 func (c *Client) SendFrame(frame Frame) {
-	if c.state != Disconnected {
+	if c.State() != Disconnected {
 		if c.logLevel > DisabledLogLevel {
 			if c.logLevel <= UltraDebugLogLevel {
 				if frame.IsFullFrame() || c.options.DebugMiniframes {
@@ -494,4 +558,18 @@ func (c *Client) SendFrame(frame Frame) {
 func (c *Client) Options() *ClientOptions {
 	opts := *c.options
 	return &opts
+}
+
+func (c *Client) setState(state ClientState) {
+	c.raceLock.Lock()
+	defer c.raceLock.Unlock()
+	if state != c.state {
+		oldState := c.state
+		c.state = state
+		c.pushEvent(&ClientStateChangeEvent{
+			State:     state,
+			PrevState: oldState,
+		})
+		c.log(DebugLogLevel, "Client state change %v -> %v", oldState, state)
+	}
 }
