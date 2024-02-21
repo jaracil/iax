@@ -19,6 +19,7 @@ const (
 	Disconnected ClientState = iota
 	Connected
 	ShutingDown
+	killed
 )
 
 func (cs ClientState) String() string {
@@ -29,6 +30,8 @@ func (cs ClientState) String() string {
 		return "Connected"
 	case ShutingDown:
 		return "ShutingDown"
+	case killed:
+		return "killed"
 	default:
 		return "Unknown"
 	}
@@ -405,11 +408,11 @@ func (c *Client) sender() {
 			data := frm.Encode()
 			n, err := c.conn.WriteToUDP(data, c.rAddr)
 			if err != nil || n != len(data) {
-				c.Disconnect()
+				c.Kill()
 				return
 			}
 		case <-c.ctx.Done():
-			c.Disconnect()
+			c.Kill()
 			return
 		}
 	}
@@ -430,7 +433,7 @@ func (c *Client) receiver() {
 		}
 		c.routeFrame(frm)
 	}
-	c.Disconnect()
+	c.Kill()
 }
 
 // NewClient creates a new IAX2 client
@@ -510,6 +513,8 @@ func (c *Client) Connect() error {
 	return nil
 }
 
+// ShutDown shuts down the client
+// It will hangup all calls and disconnect from the server
 func (c *Client) ShutDown() {
 	c.setState(ShutingDown)
 	for retry := 0; retry < 3; retry++ {
@@ -522,13 +527,13 @@ func (c *Client) ShutDown() {
 		}
 	}
 	// TODO: Unregister if registered
-	c.Disconnect()
+	c.Kill()
 }
 
-// Disconnect disconnects from the server
-func (c *Client) Disconnect() {
-	if c.State() == Connected || c.State() == ShutingDown {
-		c.setState(Disconnected)
+// Kill kills the client without shutting down the calls
+func (c *Client) Kill() {
+	if c.State() != killed {
+		c.setState(killed)
 
 		if c.conn != nil {
 			c.conn.Close()
