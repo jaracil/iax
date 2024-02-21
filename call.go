@@ -184,6 +184,7 @@ type Call struct {
 	raceLock     sync.Mutex
 	state        CallState
 	peer         PeerInfo
+	acceptCodec  Codec
 	outgoing     bool
 	mediaPlaying bool
 	mediaStop    bool
@@ -273,8 +274,8 @@ func (c *Call) mediaOutputLoop() {
 	}
 }
 
-func (c *Call) PlayMedia(r io.Reader, codec Codec) error {
-	c.log(DebugLogLevel, "Playing media with codec %s frame size: %d", codec, codec.FrameSize())
+func (c *Call) PlayMedia(r io.Reader) error {
+	c.log(DebugLogLevel, "Playing media with codec %s frame size: %d", c.acceptCodec, c.acceptCodec.FrameSize())
 	c.raceLock.Lock()
 	if c.mediaPlaying {
 		c.raceLock.Unlock()
@@ -295,7 +296,7 @@ func (c *Call) PlayMedia(r io.Reader, codec Codec) error {
 			Playing: false,
 		})
 	}()
-	frameSize := codec.FrameSize()
+	frameSize := c.acceptCodec.FrameSize()
 	buf := make([]byte, frameSize)
 	nextDeadline := time.Now().Add(time.Millisecond * 20)
 	for !c.mediaStop && c.State() != HangupCallState {
@@ -316,7 +317,7 @@ func (c *Call) PlayMedia(r io.Reader, codec Codec) error {
 		select {
 		case c.mediaQueue <- &MediaEvent{
 			Data:  buf,
-			Codec: codec,
+			Codec: c.acceptCodec,
 		}:
 		case <-c.ctx.Done():
 			return c.ctx.Err()
@@ -697,6 +698,7 @@ func (c *Call) Accept(codec Codec, auth bool) error {
 			}
 			return c.kill(ErrUnexpectedFrameType)
 		}
+		c.acceptCodec = codec
 		c.setState(AcceptCallState)
 	} else {
 		return c.kill(ErrInvalidState)
