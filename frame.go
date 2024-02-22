@@ -1065,7 +1065,7 @@ func (f *FullFrame) IsResponse() bool {
 	switch f.frameType {
 	case FrmIAXCtl:
 		switch f.subclass {
-		case IAXCtlRegAck, IAXCtlRegRej, IAXCtlRegAuth, IAXCtlPong, IAXCtlAck, IAXCtlAuthRep, IAXCtlLagRply, IAXCtlReject:
+		case IAXCtlRegAck, IAXCtlRegRej, IAXCtlRegAuth, IAXCtlPong, IAXCtlAck, IAXCtlAuthRep, IAXCtlLagRply:
 			return true
 		}
 	}

@@ -152,6 +152,7 @@ const (
 type PeerInfo struct {
 	CalledNumber  string
 	CallingNumber string
+	DNID          string
 	HangupCause   string
 	HangupCode    uint8
 	HungupByPeer  bool
@@ -165,6 +166,21 @@ type PeerInfo struct {
 	CallingTNS    uint16
 	CallingANI    string
 	PeerTime      time.Time
+}
+
+type DialOptions struct {
+	CalledNumber  string
+	CallingNumber string
+	DNID          string
+	CodecPrefs    []Codec
+	CodecCaps     CodecMask
+	Format        Codec
+	Language      string
+	ADSICPE       uint16
+	CallingPres   uint8
+	CallingTON    uint8
+	CallingTNS    uint16
+	CallingANI    string
 }
 
 type Call struct {
@@ -401,31 +417,24 @@ func (c *Call) processFrame(frame Frame) {
 			c.sendACK(ffrm)
 		}
 		if ffrm.IsResponse() {
-			c.respQueue <- ffrm
+			select {
+			case c.respQueue <- ffrm:
+			default:
+				c.kill(fmt.Errorf("%w: Response queue full", ErrInternal))
+			}
 			return
 		}
 		switch ffrm.FrameType() {
 		case FrmIAXCtl:
 			switch ffrm.Subclass() {
-			case IAXCtlHangup:
-				ie := ffrm.FindIE(IECause)
-				if ie != nil {
-					c.peer.HangupCause = ie.AsString()
-				}
-				ie = ffrm.FindIE(IECauseCode)
-				if ie != nil {
-					c.peer.HangupCode = ie.AsUint8()
-				}
-				c.peer.HungupByPeer = true
-				c.kill(ErrRemoteHangup)
+			case IAXCtlHangup, IAXCtlReject:
+				c.processHangup(ffrm)
+			case IAXCtlAccept:
+				c.processAccept(ffrm)
+			case IAXCtlAuthReq:
+				c.processAuthReq(ffrm)
 			case IAXCtlNew:
-				if c.State() == IdleCallState {
-					c.processIncomingCall(ffrm)
-				} else if c.State() == IncomingCallState && ffrm.Retransmit() {
-					c.log(DebugLogLevel, "Ignoring retransmitted NEW frame")
-				} else {
-					c.log(DebugLogLevel, "Unexpected NEW frame")
-				}
+				c.processIncomingCall(ffrm)
 			case IAXCtlLagRqst:
 				frame := NewFullFrame(FrmIAXCtl, IAXCtlLagRply)
 				frame.SetTimestamp(ffrm.Timestamp())
@@ -433,6 +442,8 @@ func (c *Call) processFrame(frame Frame) {
 			case IAXCtlPing, IAXCtlPoke:
 				frame := NewFullFrame(FrmIAXCtl, IAXCtlPong)
 				go c.sendFullFrame(frame)
+			default:
+				c.log(DebugLogLevel, "Unhandled IAXCtl subclass %s", SubclassToString(FrmIAXCtl, ffrm.Subclass()))
 			}
 		case FrmDTMFBegin, FrmDTMFEnd:
 			c.pushEvent(&DTMFEvent{
@@ -446,18 +457,133 @@ func (c *Call) processFrame(frame Frame) {
 				Data:  ffrm.Payload(),
 				Codec: codec,
 			})
-			// fmt.Printf("RX Full Voice Timestamp: %d\n", frame.Timestamp())
+		default:
+			c.log(DebugLogLevel, "Unhandled frame type %s", ffrm.FrameType())
 		}
 	} else {
 		c.pushEvent(&MediaEvent{
 			Data:  frame.Payload(),
 			Codec: c.peer.CodecInUse,
 		})
-		// fmt.Printf("RX Miniframe Timestamp: %d\n", frame.Timestamp())
 	}
 }
 
-func (c *Call) processIncomingCall(frame *FullFrame) {
+func (c *Call) makeDialFrame(opts *DialOptions) (*FullFrame, error) {
+	frame := NewFullFrame(FrmIAXCtl, IAXCtlNew)
+	frame.AddIE(Uint16IE(IEVersion, 2))
+	frame.AddIE(StringIE(IECalledNumber, opts.CalledNumber))
+	frame.AddIE(Uint8IE(IECallingPres, opts.CallingPres))
+	frame.AddIE(Uint8IE(IECallingTON, opts.CallingTON))
+	frame.AddIE(Uint16IE(IECallingTNS, opts.CallingTNS))
+	frame.AddIE(StringIE(IECallingANI, opts.CallingANI))
+	frame.AddIE(Uint16IE(IEADSICPE, opts.ADSICPE))
+	frame.AddIE(StringIE(IECodecPrefs, EncodePreferredCodecs(opts.CodecPrefs)))
+	frame.AddIE(Uint32IE(IECapability, uint32(opts.CodecCaps)))
+	data := make([]byte, 9)
+	binary.BigEndian.PutUint64(data[1:], uint64(opts.CodecCaps))
+	frame.AddIE(BytesIE(IECapability2, data))
+	frame.AddIE(Uint32IE(IEFormat, uint32(opts.Format.BitMask())))
+	data = make([]byte, 9)
+	binary.BigEndian.PutUint64(data[1:], uint64(opts.Format.BitMask()))
+	frame.AddIE(BytesIE(IEFormat2, data))
+	frame.AddIE(StringIE(IEUsername, c.client.options.Username))
+	if opts.DNID != "" {
+		frame.AddIE(StringIE(IEDNID, opts.DNID))
+	}
+	if opts.CallingNumber != "" {
+		frame.AddIE(StringIE(IECallingNumber, opts.CallingNumber))
+	}
+	if opts.Language != "" {
+		frame.AddIE(StringIE(IELanguage, opts.Language))
+	}
+	return frame, nil
+}
+
+func (c *Call) processHangup(frame *FullFrame) error {
+	cause := frame.FindIE(IECause).AsString()
+	code := frame.FindIE(IECauseCode).AsUint8()
+	c.peer.HangupCause = cause
+	c.peer.HangupCode = code
+	c.peer.HungupByPeer = true
+	var err error
+	switch frame.Subclass() {
+	case IAXCtlHangup:
+		err = ErrRemoteHangup
+	case IAXCtlReject:
+		err = ErrRejected
+	}
+	return c.kill(fmt.Errorf("%w: %s (%d)", err, cause, code))
+}
+
+func (c *Call) processAccept(frame *FullFrame) error {
+	if c.State() != DialingCallState {
+		return c.kill(ErrInvalidState)
+	}
+	ie := frame.FindIE(IEFormat2)
+	if ie != nil {
+		mask := CodecMask(binary.BigEndian.Uint64(ie.AsBytes()[1:]))
+		c.acceptCodec = mask.FirstCodec()
+	} else {
+		ie := frame.FindIE(IEFormat)
+		if ie != nil {
+			mask := CodecMask(ie.AsUint32())
+			c.acceptCodec = mask.FirstCodec()
+		} else {
+			return c.kill(fmt.Errorf("%w: %s", ErrMissingIE, "No codec info"))
+		}
+	}
+	c.setState(AcceptCallState)
+	return nil
+}
+
+func (c *Call) processAuthReq(frame *FullFrame) error {
+	if c.State() != DialingCallState {
+		return c.kill(ErrInvalidState)
+	}
+	ie := frame.FindIE(IEChallenge)
+	if ie == nil {
+		return c.kill(fmt.Errorf("%w: %s", ErrMissingIE, "No challenge"))
+	}
+	nonce := ie.AsString()
+	ie = frame.FindIE(IEUsername)
+	if ie == nil {
+		return c.kill(fmt.Errorf("%w: %s", ErrMissingIE, "No username"))
+	}
+	username := ie.AsString()
+	if username != c.client.options.Username {
+		return c.kill(fmt.Errorf("%w: %s", ErrAuthFailed, "Invalid username"))
+	}
+	ie = frame.FindIE(IEAuthMethods)
+	if ie == nil {
+		return c.kill(fmt.Errorf("%w: %s", ErrMissingIE, "No auth methods"))
+	}
+	if ie.AsUint16() != 0x0002 {
+		return c.kill(fmt.Errorf("%w: %s", ErrAuthFailed, "Unsupported auth method"))
+	}
+	frame = NewFullFrame(FrmIAXCtl, IAXCtlAuthRep)
+	frame.AddIE(StringIE(IEMD5Result, challengeResponse(c.client.options.Password, nonce)))
+	_, err := c.sendFullFrame(frame)
+	return err
+}
+
+func (c *Call) Dial(opts DialOptions) error {
+	if c.State() != IdleCallState {
+		return c.kill(ErrInvalidState)
+	}
+	c.outgoing = true
+	c.setState(DialingCallState)
+	frame, err := c.makeDialFrame(&opts)
+	if err != nil {
+		return c.kill(err)
+	}
+	_, err = c.sendFullFrame(frame)
+	return err
+}
+
+func (c *Call) processIncomingCall(frame *FullFrame) error {
+	if c.State() != IdleCallState {
+		return c.kill(ErrInvalidState)
+	}
 	ie := frame.FindIE(IECallingNumber)
 	if ie != nil {
 		c.peer.CallingNumber = ie.AsString()
@@ -510,6 +636,10 @@ func (c *Call) processIncomingCall(frame *FullFrame) {
 	if ie != nil {
 		c.peer.CallingANI = ie.AsString()
 	}
+	ie = frame.FindIE(IEDNID)
+	if ie != nil {
+		c.peer.DNID = ie.AsString()
+	}
 	ie = frame.FindIE(IEDateTime)
 	if ie != nil {
 		c.peer.PeerTime = IaxTimeToTime(ie.AsUint32())
@@ -517,6 +647,7 @@ func (c *Call) processIncomingCall(frame *FullFrame) {
 	c.outgoing = false
 	c.log(DebugLogLevel, "Peer info %+v", c.peer)
 	c.setState(IncomingCallState)
+	return nil
 }
 
 func (c *Call) sendMiniFrame(frame *MiniFrame) { // TODO: make it private
@@ -555,6 +686,9 @@ func (c *Call) sendFullFrame(frame *FullFrame) (*FullFrame, error) {
 			}
 		}
 		c.client.SendFrame(frame)
+		if !frame.NeedACK() && !frame.NeedResponse() {
+			return nil, nil
+		}
 		var rFrm *FullFrame
 		var err error
 		frameTimeout := c.client.options.FrameTimeout
@@ -659,7 +793,7 @@ func (c *Call) State() CallState {
 }
 
 // KillErr returns the error that caused the call to hang up.
-func (c *Call) KillErrCause() error {
+func (c *Call) KillCauseErr() error {
 	return c.killErr
 }
 
@@ -680,23 +814,14 @@ func (c *Call) Accept(codec Codec, auth bool) error {
 				return c.kill(ErrAuthFailed)
 			}
 		}
-
 		frame := NewFullFrame(FrmIAXCtl, IAXCtlAccept)
 		frame.AddIE(Uint32IE(IEFormat, uint32(codec.BitMask())))
 		buf := make([]byte, 9)
 		binary.BigEndian.PutUint64(buf[1:], uint64(codec.BitMask()))
 		frame.AddIE(BytesIE(IEFormat2, buf))
-		rFrm, err := c.sendFullFrame(frame)
+		_, err := c.sendFullFrame(frame)
 		if err != nil {
 			return c.kill(err)
-		}
-		if rFrm.FrameType() != FrmIAXCtl || rFrm.Subclass() != IAXCtlAck {
-			if rFrm.FrameType() == FrmIAXCtl && rFrm.Subclass() == IAXCtlReject {
-				cause := rFrm.FindIE(IECause).AsString()
-				code := rFrm.FindIE(IECauseCode).AsUint8()
-				return c.kill(fmt.Errorf("%w: %s (%d)", ErrRejected, cause, code))
-			}
-			return c.kill(ErrUnexpectedFrameType)
 		}
 		c.acceptCodec = codec
 		c.setState(AcceptCallState)
