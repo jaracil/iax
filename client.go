@@ -242,7 +242,7 @@ func (c *Client) Poke() (*FullFrame, error) {
 		return nil, err
 	}
 	if rfrm.FrameType() != FrmIAXCtl || rfrm.Subclass() != IAXCtlPong {
-		return nil, ErrUnexpectedFrameType
+		return nil, ErrUnexpectedFrame
 	}
 	return rfrm, nil
 }
@@ -288,7 +288,7 @@ func (c *Client) register() error {
 	}
 
 	if rFrm.FrameType() != FrmIAXCtl {
-		return ErrUnexpectedFrameType
+		return ErrUnexpectedFrame
 	}
 
 	if rFrm.Subclass() == IAXCtlRegAck {
@@ -321,7 +321,7 @@ func (c *Client) register() error {
 		}
 
 		if rFrm.FrameType() != FrmIAXCtl {
-			return ErrUnexpectedFrameType
+			return ErrUnexpectedFrame
 		}
 
 		if rFrm.Subclass() == IAXCtlRegAck {
@@ -339,7 +339,7 @@ func (c *Client) register() error {
 			return ErrRejected
 		}
 	}
-	return ErrUnexpectedFrameType
+	return ErrUnexpectedFrame
 }
 
 // routeFrame routes a frame to the appropriate call

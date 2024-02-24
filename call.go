@@ -118,6 +118,23 @@ func (e *DTMFEvent) Kind() CallEventKind {
 	return DTMFEventKind
 }
 
+type CallCtlEvent struct {
+	Subclass Subclass
+	ts       time.Time
+}
+
+func (e *CallCtlEvent) Timestamp() time.Time {
+	return e.ts
+}
+
+func (e *CallCtlEvent) SetTimestamp(ts time.Time) {
+	e.ts = ts
+}
+
+func (e *CallCtlEvent) Kind() CallEventKind {
+	return DTMFEventKind
+}
+
 type PlayEvent struct {
 	Playing bool
 	ts      time.Time
@@ -427,12 +444,8 @@ func (c *Call) processFrame(frame Frame) {
 		switch ffrm.FrameType() {
 		case FrmIAXCtl:
 			switch ffrm.Subclass() {
-			case IAXCtlHangup, IAXCtlReject:
+			case IAXCtlHangup:
 				c.processHangup(ffrm)
-			case IAXCtlAccept:
-				c.processAccept(ffrm)
-			case IAXCtlAuthReq:
-				c.processAuthReq(ffrm)
 			case IAXCtlNew:
 				c.processIncomingCall(ffrm)
 			case IAXCtlLagRqst:
@@ -444,6 +457,22 @@ func (c *Call) processFrame(frame Frame) {
 				go c.sendFullFrame(frame)
 			default:
 				c.log(DebugLogLevel, "Unhandled IAXCtl subclass %s", SubclassToString(FrmIAXCtl, ffrm.Subclass()))
+			}
+		case FrmControl:
+			switch ffrm.Subclass() {
+			case CtlAnswer:
+				if c.State() == AcceptCallState {
+					c.setState(OnlineCallState)
+				} else {
+					if c.State() == OnlineCallState && ffrm.Retransmit() {
+						return // Ignore retransmitted answer
+					}
+					c.kill(ErrInvalidState)
+				}
+			default:
+				c.pushEvent(&CallCtlEvent{
+					Subclass: ffrm.Subclass(),
+				})
 			}
 		case FrmDTMFBegin, FrmDTMFEnd:
 			c.pushEvent(&DTMFEvent{
@@ -487,6 +516,7 @@ func (c *Call) makeDialFrame(opts *DialOptions) (*FullFrame, error) {
 	binary.BigEndian.PutUint64(data[1:], uint64(opts.Format.BitMask()))
 	frame.AddIE(BytesIE(IEFormat2, data))
 	frame.AddIE(StringIE(IEUsername, c.client.options.Username))
+	frame.AddIE(Uint32IE(IEDateTime, TimeToIaxTime(time.Now())))
 	if opts.DNID != "" {
 		frame.AddIE(StringIE(IEDNID, opts.DNID))
 	}
@@ -562,22 +592,50 @@ func (c *Call) processAuthReq(frame *FullFrame) error {
 	}
 	frame = NewFullFrame(FrmIAXCtl, IAXCtlAuthRep)
 	frame.AddIE(StringIE(IEMD5Result, challengeResponse(c.client.options.Password, nonce)))
-	_, err := c.sendFullFrame(frame)
-	return err
+	rfrm, err := c.sendFullFrame(frame)
+	if err != nil {
+		return c.kill(err)
+	}
+	if rfrm.FrameType() != FrmIAXCtl {
+		return c.kill(ErrUnexpectedFrame)
+	}
+	switch rfrm.Subclass() {
+	case IAXCtlAccept:
+		return c.processAccept(rfrm)
+	case IAXCtlReject:
+		return c.processHangup(rfrm)
+	default:
+		return c.kill(ErrUnexpectedFrame)
+	}
 }
 
-func (c *Call) Dial(opts DialOptions) error {
+func (c *Call) Dial(opts *DialOptions) error {
 	if c.State() != IdleCallState {
 		return c.kill(ErrInvalidState)
 	}
 	c.outgoing = true
 	c.setState(DialingCallState)
-	frame, err := c.makeDialFrame(&opts)
+	frame, err := c.makeDialFrame(opts)
 	if err != nil {
 		return c.kill(err)
 	}
-	_, err = c.sendFullFrame(frame)
-	return err
+	rfrm, err := c.sendFullFrame(frame)
+	if err != nil {
+		return c.kill(err)
+	}
+	if rfrm.FrameType() != FrmIAXCtl {
+		return c.kill(ErrUnexpectedFrame)
+	}
+	switch rfrm.Subclass() {
+	case IAXCtlAccept:
+		return c.processAccept(rfrm)
+	case IAXCtlAuthReq:
+		return c.processAuthReq(rfrm)
+	case IAXCtlReject:
+		return c.processHangup(rfrm)
+	default:
+		return c.kill(ErrUnexpectedFrame)
+	}
 }
 
 func (c *Call) processIncomingCall(frame *FullFrame) error {
@@ -681,7 +739,7 @@ func (c *Call) sendFullFrame(frame *FullFrame) (*FullFrame, error) {
 
 	for retry := 1; retry <= 5; retry++ {
 		if c.client.logLevel > DisabledLogLevel {
-			if c.client.logLevel <= DebugLogLevel && frame.IsFullFrame() {
+			if c.client.logLevel <= DebugLogLevel {
 				c.log(DebugLogLevel, ">> TX frame, type %s, subclass %s, retransmit %t", frame.FrameType(), SubclassToString(frame.FrameType(), frame.Subclass()), frame.Retransmit())
 			}
 		}
@@ -730,6 +788,9 @@ func (c *Call) sendACK(ackFrm *FullFrame) {
 	frame.SetOSeqNo(c.oseqno)
 	frame.SetISeqNo(c.iseqno)
 	frame.SetTimestamp(ackFrm.Timestamp())
+	if c.client.logLevel <= DebugLogLevel {
+		c.log(DebugLogLevel, ">> TX frame, type %s, subclass %s, retransmit %t", frame.FrameType(), SubclassToString(frame.FrameType(), frame.Subclass()), frame.Retransmit())
+	}
 	c.client.SendFrame(frame)
 }
 
@@ -947,7 +1008,7 @@ func (c *Call) SendLagRqst() (time.Duration, error) {
 		return 0, c.kill(err)
 	}
 	if rFrm.FrameType() != FrmIAXCtl || rFrm.Subclass() != IAXCtlLagRply {
-		return 0, c.kill(ErrUnexpectedFrameType)
+		return 0, c.kill(ErrUnexpectedFrame)
 	}
 	sentTs := c.creationTs.Add(time.Millisecond * time.Duration(rFrm.Timestamp()))
 	return time.Since(sentTs), nil

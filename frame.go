@@ -1065,7 +1065,7 @@ func (f *FullFrame) IsResponse() bool {
 	switch f.frameType {
 	case FrmIAXCtl:
 		switch f.subclass {
-		case IAXCtlRegAck, IAXCtlRegRej, IAXCtlRegAuth, IAXCtlPong, IAXCtlAck, IAXCtlAuthRep, IAXCtlLagRply:
+		case IAXCtlRegAck, IAXCtlRegRej, IAXCtlRegAuth, IAXCtlPong, IAXCtlAck, IAXCtlAuthReq, IAXCtlAuthRep, IAXCtlLagRply, IAXCtlReject, IAXCtlAccept:
 			return true
 		}
 	}
@@ -1081,10 +1081,8 @@ func (f *FullFrame) NeedACK() bool {
 			return true
 		}
 	case FrmControl:
-		switch f.subclass {
-		case CtlHangup, CtlRinging, CtlAnswer, CtlBusy, CtlCongest, CtlFlash, CtlOption, CtlKey, CtlUnkey, CtlProgress, CtlProceeding, CtlHold, CtlUnhold:
-			return true
-		}
+		return true
+
 	case FrmVoice, FrmDTMFBegin, FrmDTMFEnd, FrmModem, FrmText, FrmImage, FrmVideo, FrmHTML, FrmConfortNoise, FrmNull:
 		return true
 	}
@@ -1095,7 +1093,7 @@ func (f *FullFrame) NeedResponse() bool {
 	switch f.frameType {
 	case FrmIAXCtl:
 		switch f.subclass {
-		case IAXCtlRegReq, IAXCtlAuthReq, IAXCtlPing, IAXCtlPoke, IAXCtlLagRqst:
+		case IAXCtlRegReq, IAXCtlAuthReq, IAXCtlAuthRep, IAXCtlPing, IAXCtlPoke, IAXCtlLagRqst, IAXCtlNew:
 			return true
 		}
 	}
@@ -1191,5 +1189,4 @@ func makeNonce(n int) string {
 func challengeResponse(password, nonce string) string {
 	md5Digest := md5.Sum([]byte(nonce + password))
 	return hex.EncodeToString(md5Digest[:])
-
 }
