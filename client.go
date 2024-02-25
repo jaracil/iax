@@ -2,13 +2,9 @@ package iax
 
 import (
 	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"fmt"
 	"log"
 	"net"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -110,6 +106,7 @@ func (e *IncomingCallEvent) Kind() ClientEventKind {
 }
 
 type RegistrationEvent struct {
+	Peer       string
 	Registered bool
 	Cause      string
 	TimeStamp  time.Time
@@ -151,14 +148,45 @@ type ClientEvent interface {
 	SetTimestamp(time.Time)
 }
 
+type Peer struct {
+	User           string
+	Password       string
+	Host           string
+	RegOutInterval time.Duration
+	lastRegOutTime time.Time
+	nextRegOutTime time.Time
+	RegOutOK       bool
+	RegOutErr      error
+	regInAddr      *net.UDPAddr
+	regInInterval  time.Duration
+	lastRegInTime  time.Time
+	CodecPrefs     []Codec
+	CodecCaps      CodecMask
+	lock           sync.Mutex
+}
+
+func (p *Peer) Address() *net.UDPAddr {
+	if p == nil {
+		return nil
+	}
+	p.lock.Lock()
+	defer p.lock.Unlock()
+	if p.Host != "" {
+		addr, err := net.ResolveUDPAddr("udp", p.Host)
+		if err != nil {
+			return nil
+		}
+		return addr
+	}
+	if p.regInAddr != nil {
+		return p.regInAddr
+	}
+	return nil
+}
+
 // ClientOptions are the options for the client
 type ClientOptions struct {
-	Host             string
-	Port             int
-	BindPort         int
-	Username         string
-	Password         string
-	RegInterval      time.Duration
+	BindAddr         string
 	FrameTimeout     time.Duration
 	EvtQueueSize     int
 	SendQueueSize    int
@@ -206,13 +234,11 @@ type Client struct {
 	callIDCount   uint16
 	localCallMap  map[uint16]*Call
 	remoteCallMap map[uint16]*Call
-	lastRegTime   time.Time
-	regInterval   time.Duration
-	registered    bool
+	peers         map[string]*Peer
 	logLevel      LogLevel
 	raceLock      sync.Mutex
-	lAddr         *net.UDPAddr
-	rAddr         *net.UDPAddr
+	localAddr     *net.UDPAddr
+	defPeerAddr   *net.UDPAddr
 }
 
 // SetLogLevel sets the client log level
@@ -233,113 +259,76 @@ func (c *Client) log(level LogLevel, format string, args ...interface{}) {
 	}
 }
 
-func (c *Client) Poke() (*FullFrame, error) {
+func (c *Client) AddPeer(peer *Peer) {
+	c.peers[peer.User] = peer
+}
+
+func (c *Client) Peer(user string) *Peer {
+	return c.peers[user]
+}
+
+func (c *Client) Peers() map[string]*Peer {
+	return c.peers
+}
+
+func (c *Client) DelPeer(user string) {
+	delete(c.peers, user)
+}
+
+func (c *Client) PeerAddress(user string) (*net.UDPAddr, error) {
+	peer := c.Peer(user)
+	if peer == nil {
+		return nil, ErrPeerNotFound
+	}
+	peerAddr := peer.Address()
+	if peerAddr == nil {
+		return nil, ErrPeerUnreachable
+	}
+	return peerAddr, nil
+}
+
+func (c *Client) Poke(peerUsr string) (*FullFrame, error) {
 	call := NewCall(c)
-	defer call.Hangup("", 0)
-	oFrm := NewFullFrame(FrmIAXCtl, IAXCtlPoke)
-	rfrm, err := call.sendFullFrame(oFrm)
-	if err != nil {
-		return nil, err
-	}
-	if rfrm.FrameType() != FrmIAXCtl || rfrm.Subclass() != IAXCtlPong {
-		return nil, ErrUnexpectedFrame
-	}
-	return rfrm, nil
+	return call.poke(peerUsr)
 }
 
 func (c *Client) registerLoop() {
-	next := time.Duration(0)
-	c.regInterval = c.options.RegInterval
-	for c.State() != Disconnected {
-		select {
-		case <-c.ctx.Done():
-			return
-		case <-time.After(next):
-			err := c.register()
-			if err != nil {
-				c.registered = false
-				c.pushEvent(&RegistrationEvent{
-					Registered: false,
-					Cause:      err.Error(),
-				})
-			} else {
-				c.registered = true
-				c.pushEvent(&RegistrationEvent{
-					Registered: true,
-				})
+	for c.State() == Connected {
+		time.Sleep(time.Second)
+
+		peers := c.Peers()
+		for _, peer := range peers {
+			if peer.RegOutInterval > 0 {
+				if time.Now().After(peer.nextRegOutTime) {
+					go func(p *Peer) {
+						err := c.register(p.User)
+						if err != nil {
+							p.RegOutOK = false
+							p.RegOutErr = err
+							c.pushEvent(&RegistrationEvent{
+								Peer:       p.User,
+								Registered: false,
+								Cause:      err.Error(),
+							})
+						} else {
+							p.RegOutOK = true
+							p.RegOutErr = nil
+							c.pushEvent(&RegistrationEvent{
+								Peer:       p.User,
+								Registered: true,
+							})
+						}
+
+					}(peer)
+				}
 			}
-			next = c.regInterval - time.Second*2
 		}
 	}
 }
 
-func (c *Client) register() error {
+func (c *Client) register(peer string) error {
 	call := NewCall(c)
-	defer call.kill(fmt.Errorf("no longer needed"))
-
-	oFrm := NewFullFrame(FrmIAXCtl, IAXCtlRegReq)
-	oFrm.AddIE(StringIE(IEUsername, c.options.Username))
-	oFrm.AddIE(Uint16IE(IERefresh, uint16(c.options.RegInterval.Seconds())))
-
-	rFrm, err := call.sendFullFrame(oFrm)
-
-	if err != nil {
-		return err
-	}
-
-	if rFrm.FrameType() != FrmIAXCtl {
-		return ErrUnexpectedFrame
-	}
-
-	if rFrm.Subclass() == IAXCtlRegAck {
-		return nil
-	}
-
-	if rFrm.Subclass() == IAXCtlRegAuth {
-		ie := rFrm.FindIE(IEAuthMethods)
-		if ie == nil {
-			return ErrMissingIE
-		}
-		if ie.AsUint16()&0x0002 == 0 {
-			return ErrUnsupportedAuthMethod
-		}
-		ie = rFrm.FindIE(IEChallenge)
-		if ie == nil {
-			return ErrMissingIE
-		}
-		challenge := ie.AsString()
-		md5Digest := md5.Sum([]byte(challenge + c.options.Password))
-		challengeResponse := hex.EncodeToString(md5Digest[:])
-
-		oFrm = NewFullFrame(FrmIAXCtl, IAXCtlRegReq)
-		oFrm.AddIE(StringIE(IEUsername, c.options.Username))
-		oFrm.AddIE(Uint16IE(IERefresh, uint16(c.options.RegInterval.Seconds())))
-		oFrm.AddIE(StringIE(IEMD5Result, challengeResponse))
-		rFrm, err = call.sendFullFrame(oFrm)
-		if err != nil {
-			return err
-		}
-
-		if rFrm.FrameType() != FrmIAXCtl {
-			return ErrUnexpectedFrame
-		}
-
-		if rFrm.Subclass() == IAXCtlRegAck {
-			c.lastRegTime = time.Now()
-			ie := rFrm.FindIE(IERefresh)
-			if ie != nil {
-				c.regInterval = time.Duration(ie.AsUint16()) * time.Second
-			} else {
-				c.regInterval = time.Second * 60
-			}
-			return nil
-		}
-
-		if rFrm.Subclass() == IAXCtlRegRej {
-			return ErrRejected
-		}
-	}
-	return ErrUnexpectedFrame
+	return call.register(peer)
 }
 
 // routeFrame routes a frame to the appropriate call
@@ -374,6 +363,7 @@ func (c *Client) routeFrame(frame Frame) {
 			oFrm.SetDstCallNumber(ffrm.SrcCallNumber())
 			oFrm.SetISeqNo(ffrm.OSeqNo())
 			oFrm.SetOSeqNo(ffrm.ISeqNo())
+			oFrm.SetPeerAddr(ffrm.PeerAddr())
 			c.SendFrame(oFrm)
 		} else {
 			if ffrm.FrameType() == FrmIAXCtl {
@@ -391,7 +381,7 @@ func (c *Client) routeFrame(frame Frame) {
 						call.pushFrame(frame)
 						go func() {
 							time.Sleep(time.Second)
-							call.kill(fmt.Errorf("no longer needed"))
+							call.kill(ErrLocalHangup)
 						}()
 					}
 				}
@@ -406,7 +396,12 @@ func (c *Client) sender() {
 		select {
 		case frm := <-c.sendQueue:
 			data := frm.Encode()
-			n, err := c.conn.WriteToUDP(data, c.rAddr)
+			addr := frm.PeerAddr()
+			if addr == nil {
+				c.log(ErrorLogLevel, "No peer address for frame: %s", frm)
+				continue
+			}
+			n, err := c.conn.WriteToUDP(data, addr)
 			if err != nil || n != len(data) {
 				c.Kill()
 				return
@@ -422,7 +417,7 @@ func (c *Client) sender() {
 func (c *Client) receiver() {
 	for c.State() != Disconnected {
 		data := make([]byte, FrameMaxSize)
-		n, err := c.conn.Read(data)
+		n, addr, err := c.conn.ReadFromUDP(data)
 		if err != nil {
 			break
 		}
@@ -431,6 +426,7 @@ func (c *Client) receiver() {
 			c.log(ErrorLogLevel, "Error decoding frame: %s", err)
 			continue
 		}
+		frm.SetPeerAddr(addr)
 		c.routeFrame(frm)
 	}
 	c.Kill()
@@ -438,10 +434,24 @@ func (c *Client) receiver() {
 
 // NewClient creates a new IAX2 client
 func NewClient(options *ClientOptions) *Client {
-	return &Client{
-		options: options,
-		state:   Disconnected,
+	c := &Client{
+		options:       options,
+		state:         Disconnected,
+		localCallMap:  make(map[uint16]*Call),
+		remoteCallMap: make(map[uint16]*Call),
+		peers:         make(map[string]*Peer),
 	}
+	evtQueueSize := c.options.EvtQueueSize
+	if evtQueueSize == 0 {
+		evtQueueSize = 20
+	}
+	sendQueueSize := c.options.SendQueueSize
+	if sendQueueSize == 0 {
+		sendQueueSize = 100
+	}
+	c.sendQueue = make(chan Frame, sendQueueSize)
+	c.evtQueue = make(chan ClientEvent, evtQueueSize)
+	return c
 }
 
 // State returns the client state
@@ -463,43 +473,20 @@ func (c *Client) Connect() error {
 		c.ctx, c.cancel = context.WithCancel(context.Background())
 	}
 
-	evtQueueSize := c.options.EvtQueueSize
-	if evtQueueSize == 0 {
-		evtQueueSize = 20
-	}
-	sendQueueSize := c.options.SendQueueSize
-	if sendQueueSize == 0 {
-		sendQueueSize = 100
-	}
-	c.sendQueue = make(chan Frame, sendQueueSize)
-	c.evtQueue = make(chan ClientEvent, evtQueueSize)
-	c.localCallMap = make(map[uint16]*Call)
-	c.remoteCallMap = make(map[uint16]*Call)
-
 	var err error
-	if c.options.Host != "" {
-		if c.options.Port == 0 {
-			c.options.Port = 4569 // Default IAX port
-		}
-		rAddrStr := c.options.Host
-		if !strings.Contains(rAddrStr, ":") {
-			rAddrStr = rAddrStr + ":" + strconv.Itoa(c.options.Port)
-		}
 
-		c.rAddr, err = net.ResolveUDPAddr("udp", rAddrStr)
+	if c.options.BindAddr != "" {
+		c.localAddr, err = net.ResolveUDPAddr("udp", c.options.BindAddr)
+		if err != nil {
+			return err
+		}
+	} else {
+		c.localAddr, err = net.ResolveUDPAddr("udp", "0.0.0.0:4569")
 		if err != nil {
 			return err
 		}
 	}
-
-	if c.options.BindPort != 0 {
-		lAddrStr := "0.0.0.0:" + strconv.Itoa(c.options.BindPort)
-		c.lAddr, err = net.ResolveUDPAddr("udp", lAddrStr)
-		if err != nil {
-			return err
-		}
-	}
-	conn, err := net.ListenUDP("udp", c.lAddr)
+	conn, err := net.ListenUDP("udp", c.localAddr)
 	if err != nil {
 		return err
 	}
@@ -507,9 +494,7 @@ func (c *Client) Connect() error {
 	c.setState(Connected)
 	go c.sender()
 	go c.receiver()
-	if c.options.RegInterval > 0 {
-		go c.registerLoop()
-	}
+	go c.registerLoop()
 	return nil
 }
 

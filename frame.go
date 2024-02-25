@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"time"
 )
 
@@ -781,11 +782,14 @@ type Frame interface {
 	Timestamp() uint32
 	Payload() []byte
 	IsFullFrame() bool
+	SetPeerAddr(*net.UDPAddr)
+	PeerAddr() *net.UDPAddr
 	String() string
 }
 
 // MiniFrame represents a mini IAX frame
 type MiniFrame struct {
+	peerAddr         *net.UDPAddr
 	sourceCallNumber uint16
 	timestamp        uint16
 	payload          []byte
@@ -796,6 +800,16 @@ func NewMiniFrame(payload []byte) *MiniFrame {
 	return &MiniFrame{
 		payload: payload,
 	}
+}
+
+// SetPeerAddr sets the peer address of the MiniFrame
+func (f *MiniFrame) SetPeerAddr(addr *net.UDPAddr) {
+	f.peerAddr = addr
+}
+
+// PeerAddr returns the peer address of the MiniFrame
+func (f *MiniFrame) PeerAddr() *net.UDPAddr {
+	return f.peerAddr
 }
 
 func (f *MiniFrame) String() string {
@@ -881,6 +895,7 @@ func (f *MiniFrame) Encode() []byte {
 
 // FullFrame represents a full IAX frame
 type FullFrame struct {
+	peerAddr         *net.UDPAddr
 	retransmit       bool
 	sourceCallNumber uint16
 	destCallNumber   uint16
@@ -899,6 +914,16 @@ func NewFullFrame(frameType FrameType, subclass Subclass) *FullFrame {
 		frameType: frameType,
 		subclass:  subclass,
 	}
+}
+
+// SetPeerAddr sets the peer address of the FullFrame
+func (f *FullFrame) SetPeerAddr(addr *net.UDPAddr) {
+	f.peerAddr = addr
+}
+
+// PeerAddr returns the peer address of the FullFrame
+func (f *FullFrame) PeerAddr() *net.UDPAddr {
+	return f.peerAddr
 }
 
 func (f *FullFrame) String() string {

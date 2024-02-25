@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"sync"
 	"time"
 )
@@ -166,62 +167,48 @@ const (
 	ClockSourceSoftware
 )
 
-type PeerInfo struct {
-	CalledNumber  string
-	CallingNumber string
-	DNID          string
-	HangupCause   string
-	HangupCode    uint8
-	HungupByPeer  bool
-	CodecCaps     CodecMask
-	CodecPrefs    []Codec
-	CodecFormat   Codec
-	CodecInUse    Codec
-	Language      string
-	ADSICPE       uint16
-	CallingTON    uint8
-	CallingTNS    uint16
-	CallingANI    string
-	PeerTime      time.Time
-}
-
 type DialOptions struct {
 	CalledNumber  string
 	CallingNumber string
 	DNID          string
-	CodecPrefs    []Codec
 	CodecCaps     CodecMask
-	Format        Codec
+	CodecPrefs    []Codec
+	CodecFormat   Codec
 	Language      string
 	ADSICPE       uint16
 	CallingPres   uint8
 	CallingTON    uint8
 	CallingTNS    uint16
 	CallingANI    string
+	PeerTime      time.Time
 }
-
 type Call struct {
-	client       *Client
-	respQueue    chan *FullFrame
-	evtQueue     chan CallEvent
-	frmQueue     chan Frame
-	mediaQueue   chan *MediaEvent
-	ctx          context.Context
-	cancel       context.CancelFunc
-	localCallID  uint16
-	remoteCallID uint16
-	oseqno       uint8
-	iseqno       uint8
-	creationTs   time.Time
-	sendLock     sync.Mutex
-	raceLock     sync.Mutex
-	state        CallState
-	peer         PeerInfo
-	acceptCodec  Codec
-	outgoing     bool
-	mediaPlaying bool
-	mediaStop    bool
-	killErr      error
+	client        *Client
+	respQueue     chan *FullFrame
+	evtQueue      chan CallEvent
+	frmQueue      chan Frame
+	mediaQueue    chan *MediaEvent
+	ctx           context.Context
+	cancel        context.CancelFunc
+	localCallID   uint16
+	remoteCallID  uint16
+	oseqno        uint8
+	iseqno        uint8
+	creationTs    time.Time
+	sendLock      sync.Mutex
+	raceLock      sync.Mutex
+	state         CallState
+	peer          *Peer
+	dialOptions   *DialOptions
+	acceptCodec   Codec
+	lastPeerCodec Codec
+	outgoing      bool
+	mediaPlaying  bool
+	mediaStop     bool
+	killErr       error
+	hangupCause   string
+	hangupCode    uint8
+	peerAddr      *net.UDPAddr
 }
 
 func NewCall(c *Client) *Call {
@@ -242,10 +229,9 @@ func NewCall(c *Client) *Call {
 		respQueue:  make(chan *FullFrame, 3),
 		evtQueue:   make(chan CallEvent, evtQueueSize),
 		frmQueue:   make(chan Frame, frmQueueSize),
-		mediaQueue: make(chan *MediaEvent),
+		mediaQueue: make(chan *MediaEvent, 1),
 		creationTs: time.Now(),
 	}
-
 	c.lock.Lock()
 	for {
 		c.callIDCount++
@@ -402,6 +388,19 @@ func (c *Call) processFrame(frame Frame) {
 	if c.State() == HangupCallState {
 		return
 	}
+	addr := frame.PeerAddr()
+	if c.peerAddr == nil {
+		c.peerAddr = addr
+		c.log(DebugLogLevel, "Peer address set to %s", addr.String())
+	}
+	if !addr.IP.Equal(c.peerAddr.IP) {
+		c.log(DebugLogLevel, "Frame from different peer address")
+		return
+	}
+	if addr.Port != c.peerAddr.Port {
+		c.log(DebugLogLevel, "Frame from different peer port")
+		return
+	}
 	if frame.IsFullFrame() {
 		ffrm := frame.(*FullFrame)
 		if c.client.logLevel > DisabledLogLevel {
@@ -481,7 +480,7 @@ func (c *Call) processFrame(frame Frame) {
 			})
 		case FrmVoice:
 			codec := CodecFromSubclass(ffrm.Subclass())
-			c.peer.CodecInUse = codec
+			c.lastPeerCodec = codec
 			c.pushEvent(&MediaEvent{
 				Data:  ffrm.Payload(),
 				Codec: codec,
@@ -492,7 +491,7 @@ func (c *Call) processFrame(frame Frame) {
 	} else {
 		c.pushEvent(&MediaEvent{
 			Data:  frame.Payload(),
-			Codec: c.peer.CodecInUse,
+			Codec: c.lastPeerCodec,
 		})
 	}
 }
@@ -506,16 +505,22 @@ func (c *Call) makeDialFrame(opts *DialOptions) (*FullFrame, error) {
 	frame.AddIE(Uint16IE(IECallingTNS, opts.CallingTNS))
 	frame.AddIE(StringIE(IECallingANI, opts.CallingANI))
 	frame.AddIE(Uint16IE(IEADSICPE, opts.ADSICPE))
+	if opts.CodecPrefs == nil {
+		opts.CodecPrefs = c.peer.CodecPrefs
+	}
+	if opts.CodecCaps == 0 {
+		opts.CodecCaps = c.peer.CodecCaps
+	}
 	frame.AddIE(StringIE(IECodecPrefs, EncodePreferredCodecs(opts.CodecPrefs)))
 	frame.AddIE(Uint32IE(IECapability, uint32(opts.CodecCaps)))
 	data := make([]byte, 9)
 	binary.BigEndian.PutUint64(data[1:], uint64(opts.CodecCaps))
 	frame.AddIE(BytesIE(IECapability2, data))
-	frame.AddIE(Uint32IE(IEFormat, uint32(opts.Format.BitMask())))
+	frame.AddIE(Uint32IE(IEFormat, uint32(opts.CodecFormat.BitMask())))
 	data = make([]byte, 9)
-	binary.BigEndian.PutUint64(data[1:], uint64(opts.Format.BitMask()))
+	binary.BigEndian.PutUint64(data[1:], uint64(opts.CodecFormat.BitMask()))
 	frame.AddIE(BytesIE(IEFormat2, data))
-	frame.AddIE(StringIE(IEUsername, c.client.options.Username))
+	frame.AddIE(StringIE(IEUsername, c.peer.User))
 	frame.AddIE(Uint32IE(IEDateTime, TimeToIaxTime(time.Now())))
 	if opts.DNID != "" {
 		frame.AddIE(StringIE(IEDNID, opts.DNID))
@@ -532,15 +537,14 @@ func (c *Call) makeDialFrame(opts *DialOptions) (*FullFrame, error) {
 func (c *Call) processHangup(frame *FullFrame) error {
 	cause := frame.FindIE(IECause).AsString()
 	code := frame.FindIE(IECauseCode).AsUint8()
-	c.peer.HangupCause = cause
-	c.peer.HangupCode = code
-	c.peer.HungupByPeer = true
+	c.hangupCause = cause
+	c.hangupCode = code
 	var err error
 	switch frame.Subclass() {
 	case IAXCtlHangup:
 		err = ErrRemoteHangup
 	case IAXCtlReject:
-		err = ErrRejected
+		err = ErrRemoteReject
 	}
 	return c.kill(fmt.Errorf("%w: %s (%d)", err, cause, code))
 }
@@ -580,7 +584,7 @@ func (c *Call) processAuthReq(frame *FullFrame) error {
 		return c.kill(fmt.Errorf("%w: %s", ErrMissingIE, "No username"))
 	}
 	username := ie.AsString()
-	if username != c.client.options.Username {
+	if username != c.peer.User {
 		return c.kill(fmt.Errorf("%w: %s", ErrAuthFailed, "Invalid username"))
 	}
 	ie = frame.FindIE(IEAuthMethods)
@@ -591,7 +595,7 @@ func (c *Call) processAuthReq(frame *FullFrame) error {
 		return c.kill(fmt.Errorf("%w: %s", ErrAuthFailed, "Unsupported auth method"))
 	}
 	frame = NewFullFrame(FrmIAXCtl, IAXCtlAuthRep)
-	frame.AddIE(StringIE(IEMD5Result, challengeResponse(c.client.options.Password, nonce)))
+	frame.AddIE(StringIE(IEMD5Result, challengeResponse(c.peer.Password, nonce)))
 	rfrm, err := c.sendFullFrame(frame)
 	if err != nil {
 		return c.kill(err)
@@ -609,9 +613,17 @@ func (c *Call) processAuthReq(frame *FullFrame) error {
 	}
 }
 
-func (c *Call) Dial(opts *DialOptions) error {
+func (c *Call) Dial(peerUsr string, opts *DialOptions) error {
 	if c.State() != IdleCallState {
 		return c.kill(ErrInvalidState)
+	}
+	c.peer = c.client.Peer(peerUsr)
+	if c.peer == nil {
+		return ErrPeerNotFound
+	}
+	c.peerAddr = c.peer.Address()
+	if c.peerAddr == nil {
+		return ErrPeerUnreachable
 	}
 	c.outgoing = true
 	c.setState(DialingCallState)
@@ -642,68 +654,78 @@ func (c *Call) processIncomingCall(frame *FullFrame) error {
 	if c.State() != IdleCallState {
 		return c.kill(ErrInvalidState)
 	}
-	ie := frame.FindIE(IECallingNumber)
+	ie := frame.FindIE(IEUsername)
+	if ie == nil {
+		return c.kill(fmt.Errorf("%w: %s", ErrMissingIE, "No username"))
+	}
+	c.peer = c.client.Peer(ie.AsString())
+	if c.peer == nil {
+		return c.kill(ErrPeerNotFound)
+	}
+	c.dialOptions = &DialOptions{}
+
+	ie = frame.FindIE(IECallingNumber)
 	if ie != nil {
-		c.peer.CallingNumber = ie.AsString()
+		c.dialOptions.CallingNumber = ie.AsString()
 	}
 	ie = frame.FindIE(IECalledNumber)
 	if ie != nil {
-		c.peer.CalledNumber = ie.AsString()
+		c.dialOptions.CalledNumber = ie.AsString()
 	}
 	ie = frame.FindIE(IECapability2)
 	if ie != nil {
-		c.peer.CodecCaps = CodecMask(binary.BigEndian.Uint64(ie.AsBytes()[1:]))
+		c.dialOptions.CodecCaps = CodecMask(binary.BigEndian.Uint64(ie.AsBytes()[1:]))
 	} else {
 		ie = frame.FindIE(IECapability)
 		if ie != nil {
-			c.peer.CodecCaps = CodecMask(ie.AsUint32())
+			c.dialOptions.CodecCaps = CodecMask(ie.AsUint32())
 		}
 	}
 	ie = frame.FindIE(IEFormat2)
 	if ie != nil {
 		mask := CodecMask(binary.BigEndian.Uint64(ie.AsBytes()[1:]))
-		c.peer.CodecFormat = mask.FirstCodec()
+		c.dialOptions.CodecFormat = mask.FirstCodec()
 	} else {
 		ie = frame.FindIE(IEFormat)
 		if ie != nil {
 			mask := CodecMask(ie.AsUint32())
-			c.peer.CodecFormat = mask.FirstCodec()
+			c.dialOptions.CodecFormat = mask.FirstCodec()
 		}
 	}
 	ie = frame.FindIE(IECodecPrefs)
 	if ie != nil {
-		c.peer.CodecPrefs = DecodePreferredCodecs(ie.AsString())
+		c.dialOptions.CodecPrefs = DecodePreferredCodecs(ie.AsString())
 	}
 	ie = frame.FindIE(IELanguage)
 	if ie != nil {
-		c.peer.Language = ie.AsString()
+		c.dialOptions.Language = ie.AsString()
 	}
 	ie = frame.FindIE(IEADSICPE)
 	if ie != nil {
-		c.peer.ADSICPE = ie.AsUint16()
+		c.dialOptions.ADSICPE = ie.AsUint16()
 	}
 	ie = frame.FindIE(IECallingTON)
 	if ie != nil {
-		c.peer.CallingTON = ie.AsUint8()
+		c.dialOptions.CallingTON = ie.AsUint8()
 	}
 	ie = frame.FindIE(IECallingTNS)
 	if ie != nil {
-		c.peer.CallingTNS = ie.AsUint16()
+		c.dialOptions.CallingTNS = ie.AsUint16()
 	}
 	ie = frame.FindIE(IECallingANI)
 	if ie != nil {
-		c.peer.CallingANI = ie.AsString()
+		c.dialOptions.CallingANI = ie.AsString()
 	}
 	ie = frame.FindIE(IEDNID)
 	if ie != nil {
-		c.peer.DNID = ie.AsString()
+		c.dialOptions.DNID = ie.AsString()
 	}
 	ie = frame.FindIE(IEDateTime)
 	if ie != nil {
-		c.peer.PeerTime = IaxTimeToTime(ie.AsUint32())
+		c.dialOptions.PeerTime = IaxTimeToTime(ie.AsUint32())
 	}
 	c.outgoing = false
-	c.log(DebugLogLevel, "Peer info %+v", c.peer)
+	c.log(DebugLogLevel, "Incoming call info %+v", c.dialOptions)
 	c.setState(IncomingCallState)
 	return nil
 }
@@ -713,13 +735,18 @@ func (c *Call) sendMiniFrame(frame *MiniFrame) { // TODO: make it private
 	if frame.timestamp == 0 {
 		frame.SetTimestamp(uint32(time.Since(c.creationTs).Milliseconds()))
 	}
+	frame.SetPeerAddr(c.peerAddr)
 	c.client.SendFrame(frame)
-	// fmt.Printf("  TX Miniframe Timestamp: %d\n", frame.Timestamp())
 }
 
 func (c *Call) sendFullFrame(frame *FullFrame) (*FullFrame, error) {
 	c.sendLock.Lock()
 	defer c.sendLock.Unlock()
+	if c.peerAddr == nil {
+		c.peerAddr = c.client.defPeerAddr
+		c.log(DebugLogLevel, "Peer address not set, using default %s", c.client.defPeerAddr.String())
+	}
+	frame.SetPeerAddr(c.peerAddr)
 	emptyQueue := false
 	for !emptyQueue { // Empty response queue
 		select {
@@ -788,6 +815,7 @@ func (c *Call) sendACK(ackFrm *FullFrame) {
 	frame.SetOSeqNo(c.oseqno)
 	frame.SetISeqNo(c.iseqno)
 	frame.SetTimestamp(ackFrm.Timestamp())
+	frame.SetPeerAddr(c.peerAddr)
 	if c.client.logLevel <= DebugLogLevel {
 		c.log(DebugLogLevel, ">> TX frame, type %s, subclass %s, retransmit %t", frame.FrameType(), SubclassToString(frame.FrameType(), frame.Subclass()), frame.Retransmit())
 	}
@@ -845,6 +873,90 @@ func (c *Call) pushEvent(evt CallEvent) {
 	}
 }
 
+func (c *Call) poke(peerUsr string) (*FullFrame, error) {
+	if c.State() != IdleCallState {
+		return nil, ErrInvalidState
+	}
+	defer c.kill(ErrLocalHangup)
+	peerAddr, err := c.client.PeerAddress(peerUsr)
+	if err != nil {
+		return nil, err
+	}
+	c.peerAddr = peerAddr
+	oFrm := NewFullFrame(FrmIAXCtl, IAXCtlPoke)
+	rfrm, err := c.sendFullFrame(oFrm)
+	if err != nil {
+		return nil, err
+	}
+	if rfrm.FrameType() != FrmIAXCtl || rfrm.Subclass() != IAXCtlPong {
+		return nil, ErrUnexpectedFrame
+	}
+	return rfrm, nil
+}
+
+func (c *Call) register(peerUsr string) error {
+	if c.State() != IdleCallState {
+		return ErrInvalidState
+	}
+	defer c.kill(ErrLocalHangup)
+	peer := c.client.Peer(peerUsr)
+	if peer == nil {
+		return ErrPeerNotFound
+	}
+	if peer.RegOutInterval == 0 {
+		return ErrPeerUnreachable
+	}
+	peer.nextRegOutTime = time.Now().Add(peer.RegOutInterval * time.Second) // Set new default registration time
+	peerAddr, err := c.client.PeerAddress(peerUsr)
+	if err != nil {
+		return err
+	}
+	c.peerAddr = peerAddr
+	md5Resp := ""
+	for {
+		oFrm := NewFullFrame(FrmIAXCtl, IAXCtlRegReq)
+		oFrm.AddIE(StringIE(IEUsername, peer.User))
+		oFrm.AddIE(Uint16IE(IERefresh, uint16(peer.RegOutInterval.Seconds())))
+		if md5Resp != "" {
+			oFrm.AddIE(StringIE(IEMD5Result, md5Resp))
+		}
+		rFrm, err := c.sendFullFrame(oFrm)
+		if err != nil {
+			return err
+		}
+		if rFrm.FrameType() != FrmIAXCtl {
+			return ErrUnexpectedFrame
+		}
+		switch rFrm.Subclass() {
+		case IAXCtlRegAck:
+			peer.lastRegOutTime = time.Now()
+			ie := rFrm.FindIE(IERefresh)
+			if ie != nil {
+				peer.nextRegOutTime = time.Now().Add(time.Duration(ie.AsUint16()) * time.Second)
+			}
+			return nil
+
+		case IAXCtlRegRej:
+			return ErrRemoteReject
+
+		case IAXCtlRegAuth:
+			ie := rFrm.FindIE(IEAuthMethods)
+			if ie == nil {
+				return ErrMissingIE
+			}
+			if ie.AsUint16()&0x0002 == 0 {
+				return ErrUnsupportedAuthMethod
+			}
+			ie = rFrm.FindIE(IEChallenge)
+			if ie == nil {
+				return ErrMissingIE
+			}
+			challenge := ie.AsString()
+			md5Resp = challengeResponse(peer.Password, challenge)
+		}
+	}
+}
+
 // State returns the call state
 func (c *Call) State() CallState {
 	c.raceLock.Lock()
@@ -863,7 +975,7 @@ func (c *Call) Accept(codec Codec, auth bool) error {
 	if c.State() == IncomingCallState {
 		if auth {
 			frame := NewFullFrame(FrmIAXCtl, IAXCtlAuthReq)
-			frame.AddIE(StringIE(IEUsername, c.client.options.Username))
+			frame.AddIE(StringIE(IEUsername, c.peer.User))
 			frame.AddIE(Uint16IE(IEAuthMethods, 0x0002)) // MD5
 			nonce := makeNonce(16)
 			frame.AddIE(StringIE(IEChallenge, nonce))
@@ -871,7 +983,7 @@ func (c *Call) Accept(codec Codec, auth bool) error {
 			if err != nil {
 				return c.kill(err)
 			}
-			if rFrm.FindIE(IEMD5Result).AsString() != challengeResponse(c.client.options.Password, nonce) {
+			if rFrm.FindIE(IEMD5Result).AsString() != challengeResponse(c.peer.Password, nonce) {
 				return c.kill(ErrAuthFailed)
 			}
 		}
@@ -903,7 +1015,7 @@ func (c *Call) Reject(cause string, code uint8) error {
 			frame.AddIE(Uint8IE(IECauseCode, code))
 		}
 		_, err := c.sendFullFrame(frame)
-		c.kill(ErrRejected)
+		c.kill(ErrLocalReject)
 		if err != nil {
 			return err
 		}
