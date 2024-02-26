@@ -238,7 +238,6 @@ type Client struct {
 	logLevel      LogLevel
 	raceLock      sync.Mutex
 	localAddr     *net.UDPAddr
-	defPeerAddr   *net.UDPAddr
 }
 
 // SetLogLevel sets the client log level

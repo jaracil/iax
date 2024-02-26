@@ -743,8 +743,8 @@ func (c *Call) sendFullFrame(frame *FullFrame) (*FullFrame, error) {
 	c.sendLock.Lock()
 	defer c.sendLock.Unlock()
 	if c.peerAddr == nil {
-		c.peerAddr = c.client.defPeerAddr
-		c.log(DebugLogLevel, "Peer address not set, using default %s", c.client.defPeerAddr.String())
+		c.log(DebugLogLevel, "Peer address not set")
+		return nil, ErrPeerUnreachable
 	}
 	frame.SetPeerAddr(c.peerAddr)
 	emptyQueue := false
@@ -906,7 +906,7 @@ func (c *Call) register(peerUsr string) error {
 	if peer.RegOutInterval == 0 {
 		return ErrPeerUnreachable
 	}
-	peer.nextRegOutTime = time.Now().Add(peer.RegOutInterval * time.Second) // Set new default registration time
+	peer.nextRegOutTime = time.Now().Add(peer.RegOutInterval) // Set new default registration time
 	peerAddr, err := c.client.PeerAddress(peerUsr)
 	if err != nil {
 		return err
