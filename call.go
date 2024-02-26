@@ -192,6 +192,7 @@ type Call struct {
 	cancel        context.CancelFunc
 	localCallID   uint16
 	remoteCallID  uint16
+	remoteCallKey remoteCallKey
 	oseqno        uint8
 	iseqno        uint8
 	creationTs    time.Time
@@ -424,8 +425,9 @@ func (c *Call) processFrame(frame Frame) {
 		}
 		if c.remoteCallID == 0 && ffrm.SrcCallNumber() != 0 {
 			c.remoteCallID = ffrm.SrcCallNumber()
+			c.remoteCallKey = newRemoteCallKeyFromFrame(ffrm)
 			c.client.lock.Lock()
-			c.client.remoteCallMap[c.remoteCallID] = c
+			c.client.remoteCallMap[c.remoteCallKey] = c
 			c.client.lock.Unlock()
 			c.log(DebugLogLevel, "Remote call ID set to %d", c.remoteCallID)
 		}
@@ -857,7 +859,7 @@ func (c *Call) WaitEvent(timeout time.Duration) (CallEvent, error) {
 func (c *Call) destroy() {
 	c.client.lock.Lock()
 	delete(c.client.localCallMap, c.localCallID)
-	delete(c.client.remoteCallMap, c.remoteCallID)
+	delete(c.client.remoteCallMap, c.remoteCallKey)
 	c.client.lock.Unlock()
 	c.cancel()
 }

@@ -233,7 +233,7 @@ type Client struct {
 	state         ClientState
 	callIDCount   uint16
 	localCallMap  map[uint16]*Call
-	remoteCallMap map[uint16]*Call
+	remoteCallMap map[remoteCallKey]*Call
 	peers         map[string]*Peer
 	logLevel      LogLevel
 	raceLock      sync.Mutex
@@ -340,7 +340,7 @@ func (c *Client) routeFrame(frame Frame) {
 		}
 	}
 	c.lock.RLock()
-	call, ok := c.remoteCallMap[frame.SrcCallNumber()]
+	call, ok := c.remoteCallMap[newRemoteCallKeyFromFrame(frame)]
 	c.lock.RUnlock()
 	if ok {
 		call.pushFrame(frame)
@@ -437,7 +437,7 @@ func NewClient(options *ClientOptions) *Client {
 		options:       options,
 		state:         Disconnected,
 		localCallMap:  make(map[uint16]*Call),
-		remoteCallMap: make(map[uint16]*Call),
+		remoteCallMap: make(map[remoteCallKey]*Call),
 		peers:         make(map[string]*Peer),
 	}
 	evtQueueSize := c.options.EvtQueueSize

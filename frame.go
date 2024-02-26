@@ -1215,3 +1215,18 @@ func challengeResponse(password, nonce string) string {
 	md5Digest := md5.Sum([]byte(nonce + password))
 	return hex.EncodeToString(md5Digest[:])
 }
+
+type remoteCallKey [20]byte
+
+func newRemoteCallKey(ip net.IP, port, callID uint16) remoteCallKey {
+	var key remoteCallKey
+	copy(key[:16], ip.To16())
+	binary.BigEndian.PutUint16(key[16:], port)
+	binary.BigEndian.PutUint16(key[18:], callID)
+	return key
+}
+
+func newRemoteCallKeyFromFrame(f Frame) remoteCallKey {
+	addr := f.PeerAddr()
+	return newRemoteCallKey(addr.IP, uint16(addr.Port), f.SrcCallNumber())
+}
