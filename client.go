@@ -6,10 +6,11 @@ import (
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-type ClientState int
+type ClientState int32
 
 const (
 	Disconnected ClientState = iota
@@ -236,7 +237,6 @@ type Client struct {
 	remoteCallMap map[remoteCallKey]*Call
 	peers         map[string]*Peer
 	logLevel      LogLevel
-	raceLock      sync.Mutex
 	localAddr     *net.UDPAddr
 }
 
@@ -455,9 +455,7 @@ func NewClient(options *ClientOptions) *Client {
 
 // State returns the client state
 func (c *Client) State() ClientState {
-	c.raceLock.Lock()
-	defer c.raceLock.Unlock()
-	return c.state
+	return ClientState(atomic.LoadInt32((*int32)(&c.state)))
 }
 
 // Connect connects to the server
@@ -550,11 +548,9 @@ func (c *Client) Options() *ClientOptions {
 }
 
 func (c *Client) setState(state ClientState) {
-	c.raceLock.Lock()
-	defer c.raceLock.Unlock()
-	if state != c.state {
-		oldState := c.state
-		c.state = state
+	if state != c.State() {
+		oldState := c.State()
+		atomic.StoreInt32((*int32)(&c.state), int32(state))
 		c.pushEvent(&ClientStateChangeEvent{
 			State:     state,
 			PrevState: oldState,
