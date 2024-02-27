@@ -8,10 +8,11 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-type CallState int
+type CallState int32
 
 const (
 	IdleCallState CallState = iota
@@ -230,7 +231,7 @@ func NewCall(c *Client) *Call {
 		respQueue:  make(chan *FullFrame, 3),
 		evtQueue:   make(chan CallEvent, evtQueueSize),
 		frmQueue:   make(chan Frame, frmQueueSize),
-		mediaQueue: make(chan *MediaEvent, 1),
+		mediaQueue: make(chan *MediaEvent),
 		creationTs: time.Now(),
 	}
 	c.lock.Lock()
@@ -278,14 +279,16 @@ func (c *Call) mediaOutputLoop() {
 		}
 		if needFullFrame {
 			needFullFrame = false
-			ffrm := NewFullFrame(FrmVoice, ev.Codec.Subclass())
-			ffrm.SetPayload(ev.Data)
-			_, err := c.sendFullFrame(ffrm)
-			if err != nil {
-				c.log(ErrorLogLevel, "Error sending voice full-frame: %s", err)
-				c.kill(err)
-				return
-			}
+			go func() {
+				ffrm := NewFullFrame(FrmVoice, ev.Codec.Subclass())
+				ffrm.SetPayload(ev.Data)
+				_, err := c.sendFullFrame(ffrm)
+				if err != nil {
+					c.log(ErrorLogLevel, "Error sending voice full-frame: %s", err)
+					c.kill(err)
+					return
+				}
+			}()
 		} else {
 			mfrm := NewMiniFrame(ev.Data)
 			c.sendMiniFrame(mfrm)
@@ -322,6 +325,8 @@ func (c *Call) PlayMedia(r io.Reader) error {
 	for !c.mediaStop && c.State() != HangupCallState {
 		if time.Now().Before(nextDeadline) {
 			time.Sleep(time.Until(nextDeadline))
+		} else {
+			c.log(DebugLogLevel, "Media output loop running behind. CPU overload?")
 		}
 		nextDeadline = nextDeadline.Add(time.Millisecond * 20)
 		n, err := r.Read(buf)
@@ -780,7 +785,7 @@ func (c *Call) sendFullFrame(frame *FullFrame) (*FullFrame, error) {
 		var err error
 		frameTimeout := c.client.options.FrameTimeout
 		if frameTimeout == 0 {
-			frameTimeout = time.Millisecond * 100
+			frameTimeout = time.Millisecond * 250
 		}
 		for {
 			rFrm, err = c.waitResponse(frameTimeout)
@@ -961,10 +966,7 @@ func (c *Call) register(peerUsr string) error {
 
 // State returns the call state
 func (c *Call) State() CallState {
-	c.raceLock.Lock()
-	s := c.state
-	c.raceLock.Unlock()
-	return s
+	return CallState(atomic.LoadInt32((*int32)(&c.state)))
 }
 
 // KillErr returns the error that caused the call to hang up.
@@ -986,7 +988,8 @@ func (c *Call) Accept(codec Codec, auth bool) error {
 				return c.kill(err)
 			}
 			if rFrm.FindIE(IEMD5Result).AsString() != challengeResponse(c.peer.Password, nonce) {
-				return c.kill(ErrAuthFailed)
+				c.Reject("Authentication failed", 0)
+				return ErrAuthFailed
 			}
 		}
 		frame := NewFullFrame(FrmIAXCtl, IAXCtlAccept)
@@ -994,12 +997,22 @@ func (c *Call) Accept(codec Codec, auth bool) error {
 		buf := make([]byte, 9)
 		binary.BigEndian.PutUint64(buf[1:], uint64(codec.BitMask()))
 		frame.AddIE(BytesIE(IEFormat2, buf))
-		_, err := c.sendFullFrame(frame)
+		rfrm, err := c.sendFullFrame(frame)
 		if err != nil {
 			return c.kill(err)
 		}
-		c.acceptCodec = codec
-		c.setState(AcceptCallState)
+		if rfrm.FrameType() != FrmIAXCtl {
+			return c.kill(ErrUnexpectedFrame)
+		}
+		switch rfrm.Subclass() {
+		case IAXCtlReject:
+			return c.processHangup(rfrm)
+		case IAXCtlAck:
+			c.acceptCodec = codec
+			c.setState(AcceptCallState)
+		default:
+			return c.kill(ErrUnexpectedFrame)
+		}
 	} else {
 		return c.kill(ErrInvalidState)
 	}
@@ -1017,7 +1030,7 @@ func (c *Call) Reject(cause string, code uint8) error {
 			frame.AddIE(Uint8IE(IECauseCode, code))
 		}
 		_, err := c.sendFullFrame(frame)
-		c.kill(ErrLocalReject)
+		c.kill(fmt.Errorf("%w: cause:%s code:%d", ErrLocalReject, cause, code))
 		if err != nil {
 			return err
 		}
@@ -1030,7 +1043,7 @@ func (c *Call) Reject(cause string, code uint8) error {
 func (c *Call) kill(err error) error {
 	if c.killErr == nil {
 		c.killErr = err
-		c.log(DebugLogLevel, "Killed, cause \"%s\"", err)
+		c.log(DebugLogLevel, "Killed \"%s\"", err)
 	}
 	c.setState(HangupCallState)
 	return err
@@ -1160,21 +1173,19 @@ func (c *Call) SendDTMF(digits string, dur, gap int) error {
 }
 
 func (c *Call) setState(state CallState) {
-	c.raceLock.Lock()
-	defer c.raceLock.Unlock()
-	if c.state == HangupCallState { // Ignore state changes after hangup
+	if c.State() == HangupCallState { // Ignore state changes after hangup
 		c.log(ErrorLogLevel, "Already hung up")
 		return
 	}
-	if state != c.state {
-		oldState := c.state
-		c.state = state
+	if state != c.State() {
+		oldState := c.State()
+		atomic.StoreInt32((*int32)(&c.state), int32(state))
 		c.pushEvent(&CallStateChangeEvent{
 			State:     state,
 			PrevState: oldState,
 		})
 		c.log(DebugLogLevel, "State change %v -> %v", oldState, state)
-		switch c.state {
+		switch state {
 		case AcceptCallState:
 			go c.mediaOutputLoop()
 		case HangupCallState:
