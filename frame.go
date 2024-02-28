@@ -1196,6 +1196,7 @@ func IaxTimeToTime(t uint32) time.Time {
 }
 
 func TimeToIaxTime(t time.Time) uint32 {
+	t = t.UTC()
 	year := uint32(t.Year() - 2000)
 	month := uint32(t.Month())
 	day := uint32(t.Day())
