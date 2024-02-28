@@ -189,6 +189,7 @@ type Call struct {
 	evtQueue      chan CallEvent
 	frmQueue      chan Frame
 	mediaQueue    chan *MediaEvent
+	ticker        chan time.Time
 	ctx           context.Context
 	cancel        context.CancelFunc
 	localCallID   uint16
@@ -231,7 +232,8 @@ func NewCall(c *Client) *Call {
 		respQueue:  make(chan *FullFrame, 3),
 		evtQueue:   make(chan CallEvent, evtQueueSize),
 		frmQueue:   make(chan Frame, frmQueueSize),
-		mediaQueue: make(chan *MediaEvent),
+		mediaQueue: make(chan *MediaEvent, 5),
+		ticker:     make(chan time.Time),
 		creationTs: time.Now(),
 	}
 	c.lock.Lock()
@@ -277,11 +279,18 @@ func (c *Call) mediaOutputLoop() {
 		case <-c.ctx.Done():
 			return
 		}
+		var eventTs time.Time
+		select {
+		case eventTs = <-c.ticker:
+		case <-c.ctx.Done():
+			return
+		}
 		if needFullFrame {
 			needFullFrame = false
 			go func() {
 				ffrm := NewFullFrame(FrmVoice, ev.Codec.Subclass())
 				ffrm.SetPayload(ev.Data)
+				ffrm.SetTimestamp(uint32(eventTs.Sub(c.creationTs).Milliseconds()))
 				_, err := c.sendFullFrame(ffrm)
 				if err != nil {
 					c.log(ErrorLogLevel, "Error sending voice full-frame: %s", err)
@@ -291,9 +300,24 @@ func (c *Call) mediaOutputLoop() {
 			}()
 		} else {
 			mfrm := NewMiniFrame(ev.Data)
+			mfrm.SetTimestamp(uint32(eventTs.Sub(c.creationTs).Milliseconds()))
 			c.sendMiniFrame(mfrm)
 		}
 
+	}
+}
+
+func (c *Call) tickerLoop() {
+	nextTick := time.Now()
+	for c.State() != HangupCallState {
+		if time.Now().Before(nextTick) {
+			time.Sleep(time.Until(nextTick))
+		}
+		select {
+		case c.ticker <- nextTick:
+		default:
+		}
+		nextTick = nextTick.Add(time.Millisecond * 20)
 	}
 }
 
@@ -320,15 +344,8 @@ func (c *Call) PlayMedia(r io.Reader) error {
 		})
 	}()
 	frameSize := c.acceptCodec.FrameSize()
-	buf := make([]byte, frameSize)
-	nextDeadline := time.Now().Add(time.Millisecond * 20)
 	for !c.mediaStop && c.State() != HangupCallState {
-		if time.Now().Before(nextDeadline) {
-			time.Sleep(time.Until(nextDeadline))
-		} else {
-			c.log(DebugLogLevel, "Media output loop running behind. CPU overload?")
-		}
-		nextDeadline = nextDeadline.Add(time.Millisecond * 20)
+		buf := make([]byte, frameSize)
 		n, err := r.Read(buf)
 		if err != nil {
 			if err == io.EOF {
@@ -1187,6 +1204,7 @@ func (c *Call) setState(state CallState) {
 		c.log(DebugLogLevel, "State change %v -> %v", oldState, state)
 		switch state {
 		case AcceptCallState:
+			go c.tickerLoop()
 			go c.mediaOutputLoop()
 		case HangupCallState:
 			c.destroy()
