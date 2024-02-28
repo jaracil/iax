@@ -366,7 +366,8 @@ func (c *Client) routeFrame(frame Frame) {
 			c.SendFrame(oFrm)
 		} else {
 			if ffrm.FrameType() == FrmIAXCtl {
-				if ffrm.Subclass() == IAXCtlNew { // New incoming call
+				switch ffrm.Subclass() {
+				case IAXCtlNew:
 					if c.State() == Connected {
 						call := NewCall(c)
 						call.pushFrame(frame)
@@ -374,14 +375,15 @@ func (c *Client) routeFrame(frame Frame) {
 							Call: call,
 						})
 					}
-				} else if ffrm.Subclass() == IAXCtlPoke {
+				case IAXCtlRegReq:
 					if c.State() == Connected {
 						call := NewCall(c)
 						call.pushFrame(frame)
-						go func() {
-							time.Sleep(time.Second)
-							call.kill(ErrLocalHangup)
-						}()
+					}
+				case IAXCtlPoke:
+					if c.State() == Connected {
+						call := NewCall(c)
+						call.pushFrame(frame)
 					}
 				}
 			}

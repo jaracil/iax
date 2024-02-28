@@ -471,13 +471,20 @@ func (c *Call) processFrame(frame Frame) {
 				c.processHangup(ffrm)
 			case IAXCtlNew:
 				c.processIncomingCall(ffrm)
+			case IAXCtlRegReq:
+				c.processRegReq(ffrm)
 			case IAXCtlLagRqst:
 				frame := NewFullFrame(FrmIAXCtl, IAXCtlLagRply)
 				frame.SetTimestamp(ffrm.Timestamp())
 				go c.sendFullFrame(frame)
 			case IAXCtlPing, IAXCtlPoke:
 				frame := NewFullFrame(FrmIAXCtl, IAXCtlPong)
-				go c.sendFullFrame(frame)
+				go func() {
+					c.sendFullFrame(frame)
+					if c.State() == IdleCallState {
+						c.kill(fmt.Errorf("%w, unneeded temp call", ErrLocalHangup))
+					}
+				}()
 			default:
 				c.log(DebugLogLevel, "Unhandled IAXCtl subclass %s", SubclassToString(FrmIAXCtl, ffrm.Subclass()))
 			}
@@ -672,6 +679,42 @@ func (c *Call) Dial(peerUsr string, opts *DialOptions) error {
 	default:
 		return c.kill(ErrUnexpectedFrame)
 	}
+}
+
+func (c *Call) processRegReq(frame *FullFrame) error {
+	ie := frame.FindIE(IEUsername)
+	if ie == nil {
+		return c.kill(fmt.Errorf("%w: %s", ErrMissingIE, "No username"))
+	}
+	peer := c.client.Peer(ie.AsString())
+	if peer == nil {
+		c.Reject("Peer not found", 0)
+		return ErrPeerNotFound
+	}
+	refreshInterval := time.Second * 60
+	ie = frame.FindIE(IERefresh)
+	if ie != nil {
+		i := time.Duration(ie.AsUint16())
+		if i > 0 {
+			refreshInterval = i * time.Second
+		}
+	}
+
+	// Regauth here
+
+	// Accept the registration
+	frame = NewFullFrame(FrmIAXCtl, IAXCtlRegAck)
+	frame.AddIE(StringIE(IEUsername, peer.User))
+	frame.AddIE(Uint16IE(IERefresh, uint16(refreshInterval.Seconds())))
+	frame.AddIE(Uint32IE(IEDateTime, TimeToIaxTime(time.Now())))
+	_, err := c.sendFullFrame(frame)
+	if err != nil {
+		return c.kill(err)
+	}
+	peer.lastRegInTime = time.Now()
+	peer.regInAddr = frame.PeerAddr()
+	peer.regInInterval = refreshInterval
+	return c.kill(fmt.Errorf("%w, unneeded temp call", ErrLocalHangup))
 }
 
 func (c *Call) processIncomingCall(frame *FullFrame) error {
