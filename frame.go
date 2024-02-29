@@ -1090,7 +1090,7 @@ func (f *FullFrame) IsResponse() bool {
 	switch f.frameType {
 	case FrmIAXCtl:
 		switch f.subclass {
-		case IAXCtlRegAck, IAXCtlRegRej, IAXCtlRegAuth, IAXCtlPong, IAXCtlAck, IAXCtlAuthReq, IAXCtlAuthRep, IAXCtlLagRply, IAXCtlReject, IAXCtlAccept:
+		case IAXCtlRegAck, IAXCtlRegReq, IAXCtlRegRej, IAXCtlRegAuth, IAXCtlPong, IAXCtlAck, IAXCtlAuthReq, IAXCtlAuthRep, IAXCtlLagRply, IAXCtlReject, IAXCtlAccept:
 			return true
 		}
 	}
@@ -1118,7 +1118,7 @@ func (f *FullFrame) NeedResponse() bool {
 	switch f.frameType {
 	case FrmIAXCtl:
 		switch f.subclass {
-		case IAXCtlRegReq, IAXCtlAuthReq, IAXCtlAuthRep, IAXCtlPing, IAXCtlPoke, IAXCtlLagRqst, IAXCtlNew:
+		case IAXCtlRegReq, IAXCtlRegAuth, IAXCtlAuthReq, IAXCtlAuthRep, IAXCtlPing, IAXCtlPoke, IAXCtlLagRqst, IAXCtlNew:
 			return true
 		}
 	}

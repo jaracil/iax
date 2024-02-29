@@ -381,12 +381,14 @@ func (c *Call) SendMedia(ev *MediaEvent) error {
 		return ErrInvalidState
 	}
 	if c.mediaPlaying {
-		return nil // Drop sync source events when playing media
+		return nil // Drop sync media when playing async media
 	}
 	select {
-	case c.mediaQueue <- ev: // Block when async source
+	case c.mediaQueue <- ev:
 	case <-c.ctx.Done():
 		return c.ctx.Err()
+	default:
+		return ErrFullBuffer
 	}
 	return nil
 }
@@ -456,7 +458,7 @@ func (c *Call) processFrame(frame Frame) {
 		if ffrm.NeedACK() {
 			c.sendACK(ffrm)
 		}
-		if ffrm.IsResponse() {
+		if ffrm.IsResponse() && ffrm.DstCallNumber() != 0 {
 			select {
 			case c.respQueue <- ffrm:
 			default:
@@ -472,7 +474,7 @@ func (c *Call) processFrame(frame Frame) {
 			case IAXCtlNew:
 				c.processIncomingCall(ffrm)
 			case IAXCtlRegReq:
-				c.processRegReq(ffrm)
+				go c.processRegReq(ffrm)
 			case IAXCtlLagRqst:
 				frame := NewFullFrame(FrmIAXCtl, IAXCtlLagRply)
 				frame.SetTimestamp(ffrm.Timestamp())
@@ -682,39 +684,66 @@ func (c *Call) Dial(peerUsr string, opts *DialOptions) error {
 }
 
 func (c *Call) processRegReq(frame *FullFrame) error {
-	ie := frame.FindIE(IEUsername)
-	if ie == nil {
-		return c.kill(fmt.Errorf("%w: %s", ErrMissingIE, "No username"))
-	}
-	peer := c.client.Peer(ie.AsString())
-	if peer == nil {
-		c.Reject("Peer not found", 0)
-		return ErrPeerNotFound
-	}
-	refreshInterval := time.Second * 60
-	ie = frame.FindIE(IERefresh)
-	if ie != nil {
-		i := time.Duration(ie.AsUint16())
-		if i > 0 {
-			refreshInterval = i * time.Second
+	challenge := ""
+	for {
+		ie := frame.FindIE(IEUsername)
+		if ie == nil {
+			return c.kill(fmt.Errorf("%w: %s", ErrMissingIE, "No username"))
 		}
-	}
+		peer := c.client.Peer(ie.AsString())
+		if peer == nil {
+			c.Reject("Peer not found", 0)
+			return ErrPeerNotFound
+		}
+		refreshInterval := time.Second * 60
+		ie = frame.FindIE(IERefresh)
+		if ie != nil {
+			i := time.Duration(ie.AsUint16())
+			if i > 0 {
+				refreshInterval = i * time.Second
+			}
+		}
+		if challenge != "" {
+			ie = frame.FindIE(IEMD5Result)
+			if ie == nil || ie.AsString() != challengeResponse(peer.Password, challenge) {
+				frm := NewFullFrame(FrmIAXCtl, IAXCtlRegRej)
+				c.sendFullFrame(frm)
+				c.log(DebugLogLevel, "Registration auth failed from %s (%s)", peer.User, refreshInterval)
+				return c.kill(ErrAuthFailed)
+			}
+		}
+		if peer.Password != "" && challenge == "" {
+			c.log(DebugLogLevel, "Sending registration auth")
+			var err error
+			frame = NewFullFrame(FrmIAXCtl, IAXCtlRegAuth)
+			frame.AddIE(StringIE(IEUsername, peer.User))
+			frame.AddIE(Uint16IE(IEAuthMethods, 0x0002)) // MD5
+			challenge = makeNonce(16)
+			frame.AddIE(StringIE(IEChallenge, challenge))
+			frame, err = c.sendFullFrame(frame)
+			if err != nil {
+				return c.kill(err)
+			}
+			if frame.FrameType() != FrmIAXCtl || frame.Subclass() != IAXCtlRegReq {
+				return c.kill(ErrUnexpectedFrame)
+			}
+			continue
+		}
 
-	// Regauth here
-
-	// Accept the registration
-	frame = NewFullFrame(FrmIAXCtl, IAXCtlRegAck)
-	frame.AddIE(StringIE(IEUsername, peer.User))
-	frame.AddIE(Uint16IE(IERefresh, uint16(refreshInterval.Seconds())))
-	frame.AddIE(Uint32IE(IEDateTime, TimeToIaxTime(time.Now())))
-	_, err := c.sendFullFrame(frame)
-	if err != nil {
-		return c.kill(err)
+		frame = NewFullFrame(FrmIAXCtl, IAXCtlRegAck)
+		frame.AddIE(StringIE(IEUsername, peer.User))
+		frame.AddIE(Uint16IE(IERefresh, uint16(refreshInterval.Seconds())))
+		frame.AddIE(Uint32IE(IEDateTime, TimeToIaxTime(time.Now())))
+		_, err := c.sendFullFrame(frame)
+		if err != nil {
+			return c.kill(err)
+		}
+		peer.lastRegInTime = time.Now()
+		peer.regInAddr = frame.PeerAddr()
+		peer.regInInterval = refreshInterval
+		c.log(DebugLogLevel, "Registration success from %s (%s)", peer.User, refreshInterval)
+		return c.kill(fmt.Errorf("%w, unneeded temp call", ErrLocalHangup))
 	}
-	peer.lastRegInTime = time.Now()
-	peer.regInAddr = frame.PeerAddr()
-	peer.regInInterval = refreshInterval
-	return c.kill(fmt.Errorf("%w, unneeded temp call", ErrLocalHangup))
 }
 
 func (c *Call) processIncomingCall(frame *FullFrame) error {

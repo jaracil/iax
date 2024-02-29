@@ -20,4 +20,5 @@ var (
 	ErrRemoteHangup          = errors.New("remote hangup")
 	ErrPeerNotFound          = errors.New("peer not found")
 	ErrPeerUnreachable       = errors.New("peer unreachable")
+	ErrFullBuffer            = errors.New("full buffer")
 )
