@@ -695,6 +695,10 @@ func (c *Call) processRegReq(frame *FullFrame) error {
 			c.Reject("Peer not found", 0)
 			return ErrPeerNotFound
 		}
+		if peer.Host != "" {
+			c.Reject("registration not allowed", 0)
+			return ErrPeerUnreachable
+		}
 		refreshInterval := time.Second * 60
 		ie = frame.FindIE(IERefresh)
 		if ie != nil {
