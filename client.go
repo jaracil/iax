@@ -10,21 +10,21 @@ import (
 	"time"
 )
 
-type ClientState int32
+type IAXTrunkState int32
 
 const (
-	Disconnected ClientState = iota
-	Connected
+	Uninitialized IAXTrunkState = iota
+	Ready
 	ShutingDown
 	killed
 )
 
-func (cs ClientState) String() string {
+func (cs IAXTrunkState) String() string {
 	switch cs {
-	case Disconnected:
-		return "Disconnected"
-	case Connected:
-		return "Connected"
+	case Uninitialized:
+		return "Uninitialized"
+	case Ready:
+		return "Ready"
 	case ShutingDown:
 		return "ShutingDown"
 	case killed:
@@ -68,21 +68,21 @@ func (ll LogLevel) String() string {
 	}
 }
 
-type ClientEventKind int
+type IAXTrunkEventKind int
 
 const (
-	IncomingCallClientEvent ClientEventKind = iota
-	RegisterClientEvent
-	StateChangeClientEvent
+	IncomingCallIAXTrunkEvent IAXTrunkEventKind = iota
+	RegisterIAXTrunkEvent
+	StateChangeIAXTrunkEvent
 )
 
-func (et ClientEventKind) String() string {
-	switch et {
-	case IncomingCallClientEvent:
+func (it IAXTrunkEventKind) String() string {
+	switch it {
+	case IncomingCallIAXTrunkEvent:
 		return "IncomingCall"
-	case RegisterClientEvent:
+	case RegisterIAXTrunkEvent:
 		return "Register"
-	case StateChangeClientEvent:
+	case StateChangeIAXTrunkEvent:
 		return "StateChange"
 	default:
 		return "Unknown"
@@ -102,8 +102,8 @@ func (e *IncomingCallEvent) SetTimestamp(ts time.Time) {
 	e.TimeStamp = ts
 }
 
-func (e *IncomingCallEvent) Kind() ClientEventKind {
-	return IncomingCallClientEvent
+func (e *IncomingCallEvent) Kind() IAXTrunkEventKind {
+	return IncomingCallIAXTrunkEvent
 }
 
 type RegistrationEvent struct {
@@ -121,30 +121,30 @@ func (e *RegistrationEvent) SetTimestamp(ts time.Time) {
 	e.TimeStamp = ts
 }
 
-func (e *RegistrationEvent) Kind() ClientEventKind {
-	return RegisterClientEvent
+func (e *RegistrationEvent) Kind() IAXTrunkEventKind {
+	return RegisterIAXTrunkEvent
 }
 
-type ClientStateChangeEvent struct {
-	State     ClientState
-	PrevState ClientState
+type IAXTrunkStateChangeEvent struct {
+	State     IAXTrunkState
+	PrevState IAXTrunkState
 	TimeStamp time.Time
 }
 
-func (e *ClientStateChangeEvent) Timestamp() time.Time {
+func (e *IAXTrunkStateChangeEvent) Timestamp() time.Time {
 	return e.TimeStamp
 }
 
-func (e *ClientStateChangeEvent) SetTimestamp(ts time.Time) {
+func (e *IAXTrunkStateChangeEvent) SetTimestamp(ts time.Time) {
 	e.TimeStamp = ts
 }
 
-func (e *ClientStateChangeEvent) Kind() ClientEventKind {
-	return StateChangeClientEvent
+func (e *IAXTrunkStateChangeEvent) Kind() IAXTrunkEventKind {
+	return StateChangeIAXTrunkEvent
 }
 
-type ClientEvent interface {
-	Kind() ClientEventKind
+type IAXTrunkEvent interface {
+	Kind() IAXTrunkEventKind
 	Timestamp() time.Time
 	SetTimestamp(time.Time)
 }
@@ -185,8 +185,8 @@ func (p *Peer) Address() *net.UDPAddr {
 	return nil
 }
 
-// ClientOptions are the options for the client
-type ClientOptions struct {
+// IAXTrunkOptions are the options for the IAX trunk
+type IAXTrunkOptions struct {
 	BindAddr         string
 	FrameTimeout     time.Duration
 	EvtQueueSize     int
@@ -197,22 +197,22 @@ type ClientOptions struct {
 	DebugMiniframes  bool
 }
 
-func (c *Client) pushEvent(evt ClientEvent) {
+func (it *IAXTrunk) pushEvent(evt IAXTrunkEvent) {
 	if evt.Timestamp().IsZero() {
 		evt.SetTimestamp(time.Now())
 	}
 	select {
-	case c.evtQueue <- evt:
+	case it.evtQueue <- evt:
 	default:
-		c.log(ErrorLogLevel, "Client event queue full")
+		it.log(ErrorLogLevel, "IAX trunk event queue full")
 	}
 }
 
-func (c *Client) WaitEvent(timeout time.Duration) (ClientEvent, error) {
-	ctx, cancel := context.WithTimeout(c.ctx, timeout)
+func (it *IAXTrunk) WaitEvent(timeout time.Duration) (IAXTrunkEvent, error) {
+	ctx, cancel := context.WithTimeout(it.ctx, timeout)
 	defer cancel()
 	select {
-	case evt := <-c.evtQueue:
+	case evt := <-it.evtQueue:
 		return evt, nil
 	case <-ctx.Done():
 		if ctx.Err() == context.DeadlineExceeded {
@@ -222,16 +222,16 @@ func (c *Client) WaitEvent(timeout time.Duration) (ClientEvent, error) {
 	}
 }
 
-// Client is an IAX2 client connection
-type Client struct {
-	options       *ClientOptions
+// IAXTrunk is an IAX trunk
+type IAXTrunk struct {
+	options       *IAXTrunkOptions
 	conn          *net.UDPConn
 	ctx           context.Context
 	cancel        context.CancelFunc
 	sendQueue     chan Frame
-	evtQueue      chan ClientEvent
+	evtQueue      chan IAXTrunkEvent
 	lock          sync.RWMutex
-	state         ClientState
+	state         IAXTrunkState
 	callIDCount   uint16
 	localCallMap  map[uint16]*Call
 	remoteCallMap map[remoteCallKey]*Call
@@ -240,42 +240,42 @@ type Client struct {
 	localAddr     *net.UDPAddr
 }
 
-// SetLogLevel sets the client log level
-func (c *Client) SetLogLevel(level LogLevel) {
-	c.logLevel = level
+// SetLogLevel sets the IAX trunk log level
+func (it *IAXTrunk) SetLogLevel(level LogLevel) {
+	it.logLevel = level
 }
 
-// LogLevel returns the client log level
-func (c *Client) LogLevel() LogLevel {
-	return c.logLevel
+// LogLevel returns the IAX trunk log level
+func (it *IAXTrunk) LogLevel() LogLevel {
+	return it.logLevel
 }
 
 // log logs a message
-func (c *Client) log(level LogLevel, format string, args ...interface{}) {
-	if c.logLevel != DisabledLogLevel && level >= c.logLevel {
+func (it *IAXTrunk) log(level LogLevel, format string, args ...interface{}) {
+	if it.logLevel != DisabledLogLevel && level >= it.logLevel {
 		format = fmt.Sprintf("[%s] %s", level, format)
 		log.Printf(format, args...)
 	}
 }
 
-func (c *Client) AddPeer(peer *Peer) {
-	c.peers[peer.User] = peer
+func (it *IAXTrunk) AddPeer(peer *Peer) {
+	it.peers[peer.User] = peer
 }
 
-func (c *Client) Peer(user string) *Peer {
-	return c.peers[user]
+func (it *IAXTrunk) Peer(user string) *Peer {
+	return it.peers[user]
 }
 
-func (c *Client) Peers() map[string]*Peer {
-	return c.peers
+func (it *IAXTrunk) Peers() map[string]*Peer {
+	return it.peers
 }
 
-func (c *Client) DelPeer(user string) {
-	delete(c.peers, user)
+func (it *IAXTrunk) DelPeer(user string) {
+	delete(it.peers, user)
 }
 
-func (c *Client) PeerAddress(user string) (*net.UDPAddr, error) {
-	peer := c.Peer(user)
+func (it *IAXTrunk) PeerAddress(user string) (*net.UDPAddr, error) {
+	peer := it.Peer(user)
 	if peer == nil {
 		return nil, ErrPeerNotFound
 	}
@@ -286,25 +286,25 @@ func (c *Client) PeerAddress(user string) (*net.UDPAddr, error) {
 	return peerAddr, nil
 }
 
-func (c *Client) Poke(peerUsr string) (*FullFrame, error) {
-	call := NewCall(c)
+func (it *IAXTrunk) Poke(peerUsr string) (*FullFrame, error) {
+	call := NewCall(it)
 	return call.poke(peerUsr)
 }
 
-func (c *Client) registerLoop() {
-	for c.State() == Connected {
+func (it *IAXTrunk) registerLoop() {
+	for it.State() == Ready {
 		time.Sleep(time.Second)
 
-		peers := c.Peers()
+		peers := it.Peers()
 		for _, peer := range peers {
 			if peer.RegOutInterval > 0 {
 				if time.Now().After(peer.nextRegOutTime) {
 					go func(p *Peer) {
-						err := c.register(p.User)
+						err := it.register(p.User)
 						if err != nil {
 							p.RegOutOK = false
 							p.RegOutErr = err
-							c.pushEvent(&RegistrationEvent{
+							it.pushEvent(&RegistrationEvent{
 								Peer:       p.User,
 								Registered: false,
 								Cause:      err.Error(),
@@ -312,7 +312,7 @@ func (c *Client) registerLoop() {
 						} else {
 							p.RegOutOK = true
 							p.RegOutErr = nil
-							c.pushEvent(&RegistrationEvent{
+							it.pushEvent(&RegistrationEvent{
 								Peer:       p.User,
 								Registered: true,
 							})
@@ -325,30 +325,30 @@ func (c *Client) registerLoop() {
 	}
 }
 
-func (c *Client) register(peer string) error {
-	call := NewCall(c)
+func (it *IAXTrunk) register(peer string) error {
+	call := NewCall(it)
 	return call.register(peer)
 }
 
 // routeFrame routes a frame to the appropriate call
-func (c *Client) routeFrame(frame Frame) {
-	if c.logLevel > DisabledLogLevel {
-		if c.logLevel <= UltraDebugLogLevel {
-			if frame.IsFullFrame() || c.options.DebugMiniframes {
-				c.log(UltraDebugLogLevel, "RX %s", frame)
+func (it *IAXTrunk) routeFrame(frame Frame) {
+	if it.logLevel > DisabledLogLevel {
+		if it.logLevel <= UltraDebugLogLevel {
+			if frame.IsFullFrame() || it.options.DebugMiniframes {
+				it.log(UltraDebugLogLevel, "RX %s", frame)
 			}
 		}
 	}
-	c.lock.RLock()
-	call, ok := c.remoteCallMap[newRemoteCallKeyFromFrame(frame)]
-	c.lock.RUnlock()
+	it.lock.RLock()
+	call, ok := it.remoteCallMap[newRemoteCallKeyFromFrame(frame)]
+	it.lock.RUnlock()
 	if ok {
 		call.pushFrame(frame)
 		return
 	}
-	c.lock.RLock()
-	call, ok = c.localCallMap[frame.DstCallNumber()]
-	c.lock.RUnlock()
+	it.lock.RLock()
+	call, ok = it.localCallMap[frame.DstCallNumber()]
+	it.lock.RUnlock()
 	if ok {
 		call.pushFrame(frame)
 		return
@@ -363,26 +363,26 @@ func (c *Client) routeFrame(frame Frame) {
 			oFrm.SetISeqNo(ffrm.OSeqNo())
 			oFrm.SetOSeqNo(ffrm.ISeqNo())
 			oFrm.SetPeerAddr(ffrm.PeerAddr())
-			c.SendFrame(oFrm)
+			it.SendFrame(oFrm)
 		} else {
 			if ffrm.FrameType() == FrmIAXCtl {
 				switch ffrm.Subclass() {
 				case IAXCtlNew:
-					if c.State() == Connected {
-						call := NewCall(c)
+					if it.State() == Ready {
+						call := NewCall(it)
 						call.pushFrame(frame)
-						c.pushEvent(&IncomingCallEvent{
+						it.pushEvent(&IncomingCallEvent{
 							Call: call,
 						})
 					}
 				case IAXCtlRegReq:
-					if c.State() == Connected {
-						call := NewCall(c)
+					if it.State() == Ready {
+						call := NewCall(it)
 						call.pushFrame(frame)
 					}
 				case IAXCtlPoke:
-					if c.State() == Connected {
-						call := NewCall(c)
+					if it.State() == Ready {
+						call := NewCall(it)
 						call.pushFrame(frame)
 					}
 				}
@@ -391,172 +391,172 @@ func (c *Client) routeFrame(frame Frame) {
 	}
 }
 
-// sender sends frames to the server
-func (c *Client) sender() {
-	for c.State() != Disconnected {
+// senderTask sends frames to the peers
+func (it *IAXTrunk) senderTask() {
+	for it.State() != Uninitialized {
 		select {
-		case frm := <-c.sendQueue:
+		case frm := <-it.sendQueue:
 			data := frm.Encode()
 			addr := frm.PeerAddr()
 			if addr == nil {
-				c.log(ErrorLogLevel, "No peer address for frame: %s", frm)
+				it.log(ErrorLogLevel, "No peer address for frame: %s", frm)
 				continue
 			}
-			n, err := c.conn.WriteToUDP(data, addr)
+			n, err := it.conn.WriteToUDP(data, addr)
 			if err != nil || n != len(data) {
-				c.Kill()
+				it.Kill()
 				return
 			}
-		case <-c.ctx.Done():
-			c.Kill()
+		case <-it.ctx.Done():
+			it.Kill()
 			return
 		}
 	}
 }
 
-// receiver receives frames from the server
-func (c *Client) receiver() {
-	for c.State() != Disconnected {
+// receiverTask receives frames from the peers
+func (it *IAXTrunk) receiverTask() {
+	for it.State() != Uninitialized {
 		data := make([]byte, FrameMaxSize)
-		n, addr, err := c.conn.ReadFromUDP(data)
+		n, addr, err := it.conn.ReadFromUDP(data)
 		if err != nil {
 			break
 		}
 		frm, err := DecodeFrame(data[:n])
 		if err != nil {
-			c.log(ErrorLogLevel, "Error decoding frame: %s", err)
+			it.log(ErrorLogLevel, "Error decoding frame: %s", err)
 			continue
 		}
 		frm.SetPeerAddr(addr)
-		c.routeFrame(frm)
+		it.routeFrame(frm)
 	}
-	c.Kill()
+	it.Kill()
 }
 
-// NewClient creates a new IAX2 client
-func NewClient(options *ClientOptions) *Client {
-	c := &Client{
+// NewIAXTrunk creates a new IAX trunk
+func NewIAXTrunk(options *IAXTrunkOptions) *IAXTrunk {
+	it := &IAXTrunk{
 		options:       options,
-		state:         Disconnected,
+		state:         Uninitialized,
 		localCallMap:  make(map[uint16]*Call),
 		remoteCallMap: make(map[remoteCallKey]*Call),
 		peers:         make(map[string]*Peer),
 	}
-	evtQueueSize := c.options.EvtQueueSize
+	evtQueueSize := it.options.EvtQueueSize
 	if evtQueueSize == 0 {
 		evtQueueSize = 20
 	}
-	sendQueueSize := c.options.SendQueueSize
+	sendQueueSize := it.options.SendQueueSize
 	if sendQueueSize == 0 {
 		sendQueueSize = 100
 	}
-	c.sendQueue = make(chan Frame, sendQueueSize)
-	c.evtQueue = make(chan ClientEvent, evtQueueSize)
-	return c
+	it.sendQueue = make(chan Frame, sendQueueSize)
+	it.evtQueue = make(chan IAXTrunkEvent, evtQueueSize)
+	return it
 }
 
-// State returns the client state
-func (c *Client) State() ClientState {
-	return ClientState(atomic.LoadInt32((*int32)(&c.state)))
+// State returns the IAX trunk state
+func (it *IAXTrunk) State() IAXTrunkState {
+	return IAXTrunkState(atomic.LoadInt32((*int32)(&it.state)))
 }
 
-// Connect connects to the server
-func (c *Client) Connect() error {
-	if c.State() != Disconnected {
+// Init initializes the IAX trunk
+func (it *IAXTrunk) Init() error {
+	if it.State() != Uninitialized {
 		return ErrInvalidState
 	}
 
-	if c.options.Ctx != nil {
-		c.ctx, c.cancel = context.WithCancel(c.options.Ctx)
+	if it.options.Ctx != nil {
+		it.ctx, it.cancel = context.WithCancel(it.options.Ctx)
 	} else {
-		c.ctx, c.cancel = context.WithCancel(context.Background())
+		it.ctx, it.cancel = context.WithCancel(context.Background())
 	}
 
 	var err error
 
-	if c.options.BindAddr != "" {
-		c.localAddr, err = net.ResolveUDPAddr("udp", c.options.BindAddr)
+	if it.options.BindAddr != "" {
+		it.localAddr, err = net.ResolveUDPAddr("udp", it.options.BindAddr)
 		if err != nil {
 			return err
 		}
 	} else {
-		c.localAddr, err = net.ResolveUDPAddr("udp", "0.0.0.0:4569")
+		it.localAddr, err = net.ResolveUDPAddr("udp", "0.0.0.0:4569")
 		if err != nil {
 			return err
 		}
 	}
-	conn, err := net.ListenUDP("udp", c.localAddr)
+	conn, err := net.ListenUDP("udp", it.localAddr)
 	if err != nil {
 		return err
 	}
-	c.conn = conn
-	c.setState(Connected)
-	go c.sender()
-	go c.receiver()
-	go c.registerLoop()
+	it.conn = conn
+	it.setState(Ready)
+	go it.senderTask()
+	go it.receiverTask()
+	go it.registerLoop()
 	return nil
 }
 
-// ShutDown shuts down the client
-// It will hangup all calls and disconnect from the server
-func (c *Client) ShutDown() {
-	c.setState(ShutingDown)
+// ShutDown shuts down the IAX trunk
+// It will hangup all calls and disconnect from the peers
+func (it *IAXTrunk) ShutDown() {
+	it.setState(ShutingDown)
 	for retry := 0; retry < 3; retry++ {
-		for _, call := range c.localCallMap {
+		for _, call := range it.localCallMap {
 			call.Hangup("shutdown", 0)
 		}
 		time.Sleep(time.Second)
-		if len(c.localCallMap) == 0 {
+		if len(it.localCallMap) == 0 {
 			break
 		}
 	}
 	// TODO: Unregister if registered
-	c.Kill()
+	it.Kill()
 }
 
-// Kill kills the client without shutting down the calls
-func (c *Client) Kill() {
-	if c.State() != killed {
-		c.setState(killed)
+// Kill kills the IAX trunk without shutting down the calls
+func (it *IAXTrunk) Kill() {
+	if it.State() != killed {
+		it.setState(killed)
 
-		if c.conn != nil {
-			c.conn.Close()
+		if it.conn != nil {
+			it.conn.Close()
 		}
 
-		if c.cancel != nil {
-			c.cancel()
+		if it.cancel != nil {
+			it.cancel()
 		}
 	}
 }
 
-// SendFrame sends a frame to the server
-func (c *Client) SendFrame(frame Frame) {
-	if c.State() != Disconnected {
-		if c.logLevel > DisabledLogLevel {
-			if c.logLevel <= UltraDebugLogLevel {
-				if frame.IsFullFrame() || c.options.DebugMiniframes {
-					c.log(UltraDebugLogLevel, "TX %s", frame)
+// SendFrame sends a frame to the peer
+func (it *IAXTrunk) SendFrame(frame Frame) {
+	if it.State() != Uninitialized {
+		if it.logLevel > DisabledLogLevel {
+			if it.logLevel <= UltraDebugLogLevel {
+				if frame.IsFullFrame() || it.options.DebugMiniframes {
+					it.log(UltraDebugLogLevel, "TX %s", frame)
 				}
 			}
 		}
-		c.sendQueue <- frame
+		it.sendQueue <- frame
 	}
 }
 
-// Options returns a copy of the client options
-func (c *Client) Options() *ClientOptions {
-	opts := *c.options
+// Options returns a copy of the IAX trunk options
+func (it *IAXTrunk) Options() *IAXTrunkOptions {
+	opts := *it.options
 	return &opts
 }
 
-func (c *Client) setState(state ClientState) {
-	if state != c.State() {
-		oldState := c.State()
-		atomic.StoreInt32((*int32)(&c.state), int32(state))
-		c.pushEvent(&ClientStateChangeEvent{
+func (it *IAXTrunk) setState(state IAXTrunkState) {
+	if state != it.State() {
+		oldState := it.State()
+		atomic.StoreInt32((*int32)(&it.state), int32(state))
+		it.pushEvent(&IAXTrunkStateChangeEvent{
 			State:     state,
 			PrevState: oldState,
 		})
-		c.log(DebugLogLevel, "Client state change %v -> %v", oldState, state)
+		it.log(DebugLogLevel, "IAX trunk state change %v -> %v", oldState, state)
 	}
 }

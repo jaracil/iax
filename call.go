@@ -184,7 +184,7 @@ type DialOptions struct {
 	PeerTime      time.Time
 }
 type Call struct {
-	client        *Client
+	iaxTrunk      *IAXTrunk
 	respQueue     chan *FullFrame
 	evtQueue      chan CallEvent
 	frmQueue      chan Frame
@@ -214,19 +214,19 @@ type Call struct {
 	peerAddr      *net.UDPAddr
 }
 
-func NewCall(c *Client) *Call {
-	evtQueueSize := c.options.CallEvtQueueSize
+func NewCall(it *IAXTrunk) *Call {
+	evtQueueSize := it.options.CallEvtQueueSize
 	if evtQueueSize == 0 {
 		evtQueueSize = 20
 	}
-	frmQueueSize := c.options.CallFrmQueueSize
+	frmQueueSize := it.options.CallFrmQueueSize
 	if frmQueueSize == 0 {
 		frmQueueSize = 20
 	}
 
-	ctx, cancel := context.WithCancel(c.ctx)
+	ctx, cancel := context.WithCancel(it.ctx)
 	call := &Call{
-		client:     c,
+		iaxTrunk:   it,
 		ctx:        ctx,
 		cancel:     cancel,
 		respQueue:  make(chan *FullFrame, 3),
@@ -236,19 +236,19 @@ func NewCall(c *Client) *Call {
 		ticker:     make(chan time.Time),
 		creationTs: time.Now(),
 	}
-	c.lock.Lock()
+	it.lock.Lock()
 	for {
-		c.callIDCount++
-		if c.callIDCount > 0x7fff {
-			c.callIDCount = 1
+		it.callIDCount++
+		if it.callIDCount > 0x7fff {
+			it.callIDCount = 1
 		}
-		if _, ok := c.localCallMap[c.callIDCount]; !ok {
+		if _, ok := it.localCallMap[it.callIDCount]; !ok {
 			break
 		}
 	}
-	call.localCallID = c.callIDCount
-	c.localCallMap[c.callIDCount] = call
-	c.lock.Unlock()
+	call.localCallID = it.callIDCount
+	it.localCallMap[it.callIDCount] = call
+	it.lock.Unlock()
 
 	call.log(DebugLogLevel, "Created")
 	call.setState(IdleCallState)
@@ -428,8 +428,8 @@ func (c *Call) processFrame(frame Frame) {
 	}
 	if frame.IsFullFrame() {
 		ffrm := frame.(*FullFrame)
-		if c.client.logLevel > DisabledLogLevel {
-			if c.client.logLevel <= DebugLogLevel {
+		if c.iaxTrunk.logLevel > DisabledLogLevel {
+			if c.iaxTrunk.logLevel <= DebugLogLevel {
 				c.log(DebugLogLevel, "<< RX frame, type %s, subclass %s, retransmit %t", ffrm.FrameType(), SubclassToString(ffrm.FrameType(), ffrm.Subclass()), ffrm.Retransmit())
 			}
 		}
@@ -450,9 +450,9 @@ func (c *Call) processFrame(frame Frame) {
 		if c.remoteCallID == 0 && ffrm.SrcCallNumber() != 0 {
 			c.remoteCallID = ffrm.SrcCallNumber()
 			c.remoteCallKey = newRemoteCallKeyFromFrame(ffrm)
-			c.client.lock.Lock()
-			c.client.remoteCallMap[c.remoteCallKey] = c
-			c.client.lock.Unlock()
+			c.iaxTrunk.lock.Lock()
+			c.iaxTrunk.remoteCallMap[c.remoteCallKey] = c
+			c.iaxTrunk.lock.Unlock()
 			c.log(DebugLogLevel, "Remote call ID set to %d", c.remoteCallID)
 		}
 		if ffrm.NeedACK() {
@@ -650,7 +650,7 @@ func (c *Call) Dial(peerUsr string, opts *DialOptions) error {
 	if c.State() != IdleCallState {
 		return c.kill(ErrInvalidState)
 	}
-	c.peer = c.client.Peer(peerUsr)
+	c.peer = c.iaxTrunk.Peer(peerUsr)
 	if c.peer == nil {
 		return ErrPeerNotFound
 	}
@@ -690,7 +690,7 @@ func (c *Call) processRegReq(frame *FullFrame) error {
 		if ie == nil {
 			return c.kill(fmt.Errorf("%w: %s", ErrMissingIE, "No username"))
 		}
-		peer := c.client.Peer(ie.AsString())
+		peer := c.iaxTrunk.Peer(ie.AsString())
 		if peer == nil {
 			c.Reject("Peer not found", 0)
 			return ErrPeerNotFound
@@ -758,7 +758,7 @@ func (c *Call) processIncomingCall(frame *FullFrame) error {
 	if ie == nil {
 		return c.kill(fmt.Errorf("%w: %s", ErrMissingIE, "No username"))
 	}
-	c.peer = c.client.Peer(ie.AsString())
+	c.peer = c.iaxTrunk.Peer(ie.AsString())
 	if c.peer == nil {
 		return c.kill(ErrPeerNotFound)
 	}
@@ -836,7 +836,7 @@ func (c *Call) sendMiniFrame(frame *MiniFrame) { // TODO: make it private
 		frame.SetTimestamp(uint32(time.Since(c.creationTs).Milliseconds()))
 	}
 	frame.SetPeerAddr(c.peerAddr)
-	c.client.SendFrame(frame)
+	c.iaxTrunk.SendFrame(frame)
 }
 
 func (c *Call) sendFullFrame(frame *FullFrame) (*FullFrame, error) {
@@ -865,18 +865,18 @@ func (c *Call) sendFullFrame(frame *FullFrame) (*FullFrame, error) {
 	frame.SetISeqNo(c.iseqno)
 
 	for retry := 1; retry <= 5; retry++ {
-		if c.client.logLevel > DisabledLogLevel {
-			if c.client.logLevel <= DebugLogLevel {
+		if c.iaxTrunk.logLevel > DisabledLogLevel {
+			if c.iaxTrunk.logLevel <= DebugLogLevel {
 				c.log(DebugLogLevel, ">> TX frame, type %s, subclass %s, retransmit %t", frame.FrameType(), SubclassToString(frame.FrameType(), frame.Subclass()), frame.Retransmit())
 			}
 		}
-		c.client.SendFrame(frame)
+		c.iaxTrunk.SendFrame(frame)
 		if !frame.NeedACK() && !frame.NeedResponse() {
 			return nil, nil
 		}
 		var rFrm *FullFrame
 		var err error
-		frameTimeout := c.client.options.FrameTimeout
+		frameTimeout := c.iaxTrunk.options.FrameTimeout
 		if frameTimeout == 0 {
 			frameTimeout = time.Millisecond * 250
 		}
@@ -916,10 +916,10 @@ func (c *Call) sendACK(ackFrm *FullFrame) {
 	frame.SetISeqNo(c.iseqno)
 	frame.SetTimestamp(ackFrm.Timestamp())
 	frame.SetPeerAddr(c.peerAddr)
-	if c.client.logLevel <= DebugLogLevel {
+	if c.iaxTrunk.logLevel <= DebugLogLevel {
 		c.log(DebugLogLevel, ">> TX frame, type %s, subclass %s, retransmit %t", frame.FrameType(), SubclassToString(frame.FrameType(), frame.Subclass()), frame.Retransmit())
 	}
-	c.client.SendFrame(frame)
+	c.iaxTrunk.SendFrame(frame)
 }
 
 func (c *Call) waitResponse(timeout time.Duration) (*FullFrame, error) {
@@ -933,8 +933,8 @@ func (c *Call) waitResponse(timeout time.Duration) (*FullFrame, error) {
 	}
 }
 
-func (c *Call) Client() *Client {
-	return c.client
+func (c *Call) IAXTrunk() *IAXTrunk {
+	return c.iaxTrunk
 }
 
 // WaitEvent waits for a call event to occur.
@@ -955,10 +955,10 @@ func (c *Call) WaitEvent(timeout time.Duration) (CallEvent, error) {
 
 // destroy destroys the call and releases resources
 func (c *Call) destroy() {
-	c.client.lock.Lock()
-	delete(c.client.localCallMap, c.localCallID)
-	delete(c.client.remoteCallMap, c.remoteCallKey)
-	c.client.lock.Unlock()
+	c.iaxTrunk.lock.Lock()
+	delete(c.iaxTrunk.localCallMap, c.localCallID)
+	delete(c.iaxTrunk.remoteCallMap, c.remoteCallKey)
+	c.iaxTrunk.lock.Unlock()
 	c.cancel()
 }
 
@@ -978,7 +978,7 @@ func (c *Call) poke(peerUsr string) (*FullFrame, error) {
 		return nil, ErrInvalidState
 	}
 	defer c.kill(ErrLocalHangup)
-	peerAddr, err := c.client.PeerAddress(peerUsr)
+	peerAddr, err := c.iaxTrunk.PeerAddress(peerUsr)
 	if err != nil {
 		return nil, err
 	}
@@ -999,7 +999,7 @@ func (c *Call) register(peerUsr string) error {
 		return ErrInvalidState
 	}
 	defer c.kill(ErrLocalHangup)
-	peer := c.client.Peer(peerUsr)
+	peer := c.iaxTrunk.Peer(peerUsr)
 	if peer == nil {
 		return ErrPeerNotFound
 	}
@@ -1007,7 +1007,7 @@ func (c *Call) register(peerUsr string) error {
 		return ErrPeerUnreachable
 	}
 	peer.nextRegOutTime = time.Now().Add(peer.RegOutInterval) // Set new default registration time
-	peerAddr, err := c.client.PeerAddress(peerUsr)
+	peerAddr, err := c.iaxTrunk.PeerAddress(peerUsr)
 	if err != nil {
 		return err
 	}
@@ -1290,5 +1290,5 @@ func (c *Call) setState(state CallState) {
 
 func (c *Call) log(level LogLevel, format string, args ...interface{}) {
 	format = fmt.Sprintf("Call %d: %s", c.localCallID, format)
-	c.client.log(level, format, args...)
+	c.iaxTrunk.log(level, format, args...)
 }
