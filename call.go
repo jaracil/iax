@@ -1068,9 +1068,9 @@ func (c *Call) KillCauseErr() error {
 }
 
 // Accept accepts the call.
-func (c *Call) Accept(codec Codec, auth bool) error {
+func (c *Call) Accept(codec Codec) error {
 	if c.State() == IncomingCallState {
-		if auth {
+		if c.peer.Password != "" {
 			frame := NewFullFrame(FrmIAXCtl, IAXCtlAuthReq)
 			frame.AddIE(StringIE(IEUsername, c.peer.User))
 			frame.AddIE(Uint16IE(IEAuthMethods, 0x0002)) // MD5
