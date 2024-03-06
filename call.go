@@ -448,12 +448,14 @@ func (c *Call) processFrame(frame Frame) {
 			c.iseqno++
 		}
 		if c.remoteCallID == 0 && ffrm.SrcCallNumber() != 0 {
-			c.remoteCallID = ffrm.SrcCallNumber()
-			c.remoteCallKey = newRemoteCallKeyFromFrame(ffrm)
-			c.iaxTrunk.lock.Lock()
-			c.iaxTrunk.remoteCallMap[c.remoteCallKey] = c
-			c.iaxTrunk.lock.Unlock()
-			c.log(DebugLogLevel, "Remote call ID set to %d", c.remoteCallID)
+			if !(ffrm.FrameType() == FrmIAXCtl && ffrm.Subclass() == IAXCtlCallToken) {
+				c.remoteCallID = ffrm.SrcCallNumber()
+				c.remoteCallKey = newRemoteCallKeyFromFrame(ffrm)
+				c.iaxTrunk.lock.Lock()
+				c.iaxTrunk.remoteCallMap[c.remoteCallKey] = c
+				c.iaxTrunk.lock.Unlock()
+				c.log(DebugLogLevel, "Remote call ID set to %d", c.remoteCallID)
+			}
 		}
 		if ffrm.NeedACK() {
 			c.sendACK(ffrm)
@@ -660,26 +662,42 @@ func (c *Call) Dial(peerUsr string, opts *DialOptions) error {
 	}
 	c.outgoing = true
 	c.setState(DialingCallState)
-	frame, err := c.makeDialFrame(opts)
-	if err != nil {
-		return c.kill(err)
-	}
-	rfrm, err := c.sendFullFrame(frame)
-	if err != nil {
-		return c.kill(err)
-	}
-	if rfrm.FrameType() != FrmIAXCtl {
-		return c.kill(ErrUnexpectedFrame)
-	}
-	switch rfrm.Subclass() {
-	case IAXCtlAccept:
-		return c.processAccept(rfrm)
-	case IAXCtlAuthReq:
-		return c.processAuthReq(rfrm)
-	case IAXCtlReject:
-		return c.processHangup(rfrm)
-	default:
-		return c.kill(ErrUnexpectedFrame)
+	callToken := ""
+	for {
+		frame, err := c.makeDialFrame(opts)
+		if err != nil {
+			return c.kill(err)
+		}
+		if c.peer.EnableCallToken {
+			frame.AddIE(StringIE(IECallToken, callToken))
+		}
+		rfrm, err := c.sendFullFrame(frame)
+		if err != nil {
+			return c.kill(err)
+		}
+		if rfrm.FrameType() != FrmIAXCtl {
+			return c.kill(ErrUnexpectedFrame)
+		}
+		switch rfrm.Subclass() {
+		case IAXCtlCallToken:
+			if !c.peer.EnableCallToken {
+				return c.kill(fmt.Errorf("%w: %s", ErrUnexpectedFrame, "Call token not enabled"))
+			}
+			callToken = rfrm.FindIE(IECallToken).AsString()
+			if callToken == "" {
+				return c.kill(fmt.Errorf("%w: %s", ErrMissingIE, "No call token"))
+			}
+			c.iseqno = 0
+			c.oseqno = 0
+		case IAXCtlAccept:
+			return c.processAccept(rfrm)
+		case IAXCtlAuthReq:
+			return c.processAuthReq(rfrm)
+		case IAXCtlReject:
+			return c.processHangup(rfrm)
+		default:
+			return c.kill(ErrUnexpectedFrame)
+		}
 	}
 }
 
@@ -1013,12 +1031,16 @@ func (c *Call) register(peerUsr string) error {
 	}
 	c.peerAddr = peerAddr
 	md5Resp := ""
+	token := ""
 	for {
 		oFrm := NewFullFrame(FrmIAXCtl, IAXCtlRegReq)
 		oFrm.AddIE(StringIE(IEUsername, peer.User))
 		oFrm.AddIE(Uint16IE(IERefresh, uint16(peer.RegOutInterval.Seconds())))
 		if md5Resp != "" {
 			oFrm.AddIE(StringIE(IEMD5Result, md5Resp))
+		}
+		if peer.EnableCallToken {
+			oFrm.AddIE(StringIE(IECallToken, token))
 		}
 		rFrm, err := c.sendFullFrame(oFrm)
 		if err != nil {
@@ -1028,6 +1050,17 @@ func (c *Call) register(peerUsr string) error {
 			return ErrUnexpectedFrame
 		}
 		switch rFrm.Subclass() {
+		case IAXCtlCallToken:
+			if !peer.EnableCallToken {
+				return ErrUnexpectedFrame
+			}
+			ie := rFrm.FindIE(IECallToken)
+			if ie == nil {
+				return ErrMissingIE
+			}
+			token = ie.AsString()
+			c.iseqno = 0
+			c.oseqno = 0
 		case IAXCtlRegAck:
 			peer.lastRegOutTime = time.Now()
 			ie := rFrm.FindIE(IERefresh)
@@ -1035,10 +1068,8 @@ func (c *Call) register(peerUsr string) error {
 				peer.nextRegOutTime = time.Now().Add(time.Duration(ie.AsUint16()) * time.Second)
 			}
 			return nil
-
 		case IAXCtlRegRej:
 			return ErrRemoteReject
-
 		case IAXCtlRegAuth:
 			ie := rFrm.FindIE(IEAuthMethods)
 			if ie == nil {

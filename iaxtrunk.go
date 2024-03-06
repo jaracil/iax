@@ -150,20 +150,21 @@ type IAXTrunkEvent interface {
 }
 
 type Peer struct {
-	User           string
-	Password       string
-	Host           string
-	RegOutInterval time.Duration
-	lastRegOutTime time.Time
-	nextRegOutTime time.Time
-	RegOutOK       bool
-	RegOutErr      error
-	regInAddr      *net.UDPAddr
-	regInInterval  time.Duration
-	lastRegInTime  time.Time
-	CodecPrefs     []Codec
-	CodecCaps      CodecMask
-	lock           sync.Mutex
+	User            string
+	Password        string
+	Host            string
+	RegOutInterval  time.Duration
+	lastRegOutTime  time.Time
+	nextRegOutTime  time.Time
+	RegOutOK        bool
+	RegOutErr       error
+	regInAddr       *net.UDPAddr
+	regInInterval   time.Duration
+	lastRegInTime   time.Time
+	CodecPrefs      []Codec
+	CodecCaps       CodecMask
+	EnableCallToken bool
+	lock            sync.Mutex
 }
 
 func (p *Peer) Address() *net.UDPAddr {

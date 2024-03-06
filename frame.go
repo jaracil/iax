@@ -550,6 +550,7 @@ const (
 	IAXCtlMWI       Subclass = 0x20
 	IAXCtlUnsupport Subclass = 0x21
 	IAXCtlTransfer  Subclass = 0x22
+	IAXCtlCallToken Subclass = 0x28
 )
 
 // Subclasses for Control frames
@@ -640,6 +641,8 @@ func SubclassToString(ft FrameType, sc Subclass) string {
 			return "Unsupport"
 		case IAXCtlTransfer:
 			return "Transfer"
+		case IAXCtlCallToken:
+			return "CallToken"
 		default:
 			return fmt.Sprintf("Unknown(%v - %v)", ft, sc)
 		}
@@ -1090,7 +1093,7 @@ func (f *FullFrame) IsResponse() bool {
 	switch f.frameType {
 	case FrmIAXCtl:
 		switch f.subclass {
-		case IAXCtlRegAck, IAXCtlRegReq, IAXCtlRegRej, IAXCtlRegAuth, IAXCtlPong, IAXCtlAck, IAXCtlAuthReq, IAXCtlAuthRep, IAXCtlLagRply, IAXCtlReject, IAXCtlAccept:
+		case IAXCtlRegAck, IAXCtlRegReq, IAXCtlRegRej, IAXCtlRegAuth, IAXCtlPong, IAXCtlAck, IAXCtlAuthReq, IAXCtlAuthRep, IAXCtlLagRply, IAXCtlReject, IAXCtlAccept, IAXCtlCallToken:
 			return true
 		}
 	}
