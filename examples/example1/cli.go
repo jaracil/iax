@@ -21,8 +21,8 @@ func main() {
 	cli.SetLogLevel(iax.DebugLogLevel)
 
 	cli.AddPeer(&iax.Peer{
-		User:            "peer_username",
-		Password:        "password_123",
+		User:            "line0",
+		Password:        "line0_123",
 		Host:            "127.0.0.1:4569",
 		RegOutInterval:  time.Second * 60,
 		CodecPrefs:      []iax.Codec{iax.CODEC_ULAW},
