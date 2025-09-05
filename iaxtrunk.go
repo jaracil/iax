@@ -167,6 +167,9 @@ type Peer struct {
 	lock            sync.Mutex
 }
 
+// Address returns the UDP address of the peer.
+// If the peer has a configured host, it resolves and returns that address.
+// Otherwise, it returns the address from the last successful registration.
 func (p *Peer) Address() *net.UDPAddr {
 	if p == nil {
 		return nil
@@ -209,6 +212,8 @@ func (it *IAXTrunk) pushEvent(evt IAXTrunkEvent) {
 	}
 }
 
+// WaitEvent waits for a trunk event to occur within the specified timeout.
+// Returns the event on success, ErrTimeout if timeout expires, or other context errors.
 func (it *IAXTrunk) WaitEvent(timeout time.Duration) (IAXTrunkEvent, error) {
 	ctx, cancel := context.WithTimeout(it.ctx, timeout)
 	defer cancel()
@@ -242,11 +247,14 @@ type IAXTrunk struct {
 }
 
 // SetLogLevel sets the IAX trunk log level
+// SetLogLevel sets the logging level for the IAX trunk.
+// Messages below this level will not be logged.
 func (it *IAXTrunk) SetLogLevel(level LogLevel) {
 	it.logLevel = level
 }
 
 // LogLevel returns the IAX trunk log level
+// LogLevel returns the current logging level of the IAX trunk.
 func (it *IAXTrunk) LogLevel() LogLevel {
 	return it.logLevel
 }
@@ -259,22 +267,30 @@ func (it *IAXTrunk) log(level LogLevel, format string, args ...interface{}) {
 	}
 }
 
+// AddPeer adds a peer to the trunk's peer registry.
+// The peer can then be used for outgoing calls and registration.
 func (it *IAXTrunk) AddPeer(peer *Peer) {
 	it.peers[peer.User] = peer
 }
 
+// Peer returns the peer associated with the given username.
+// Returns nil if the peer is not found.
 func (it *IAXTrunk) Peer(user string) *Peer {
 	return it.peers[user]
 }
 
+// Peers returns a map of all registered peers keyed by username.
 func (it *IAXTrunk) Peers() map[string]*Peer {
 	return it.peers
 }
 
+// DelPeer removes a peer from the trunk's peer registry.
 func (it *IAXTrunk) DelPeer(user string) {
 	delete(it.peers, user)
 }
 
+// PeerAddress returns the UDP address for the specified peer.
+// Returns ErrPeerNotFound if peer doesn't exist, ErrPeerUnreachable if no address available.
 func (it *IAXTrunk) PeerAddress(user string) (*net.UDPAddr, error) {
 	peer := it.Peer(user)
 	if peer == nil {
@@ -287,6 +303,8 @@ func (it *IAXTrunk) PeerAddress(user string) (*net.UDPAddr, error) {
 	return peerAddr, nil
 }
 
+// Poke sends a poke frame to the specified peer to test connectivity.
+// Returns the pong response frame on success or error on failure.
 func (it *IAXTrunk) Poke(peerUsr string) (*FullFrame, error) {
 	call := NewCall(it)
 	return call.poke(peerUsr)
@@ -435,6 +453,8 @@ func (it *IAXTrunk) receiverTask() {
 }
 
 // NewIAXTrunk creates a new IAX trunk
+// NewIAXTrunk creates a new IAX trunk with the specified options.
+// The trunk is created in Uninitialized state and must be initialized before use.
 func NewIAXTrunk(options *IAXTrunkOptions) *IAXTrunk {
 	it := &IAXTrunk{
 		options:       options,
@@ -457,11 +477,14 @@ func NewIAXTrunk(options *IAXTrunkOptions) *IAXTrunk {
 }
 
 // State returns the IAX trunk state
+// State returns the current state of the IAX trunk.
 func (it *IAXTrunk) State() IAXTrunkState {
 	return IAXTrunkState(atomic.LoadInt32((*int32)(&it.state)))
 }
 
 // Init initializes the IAX trunk
+// Init initializes the IAX trunk by binding to the specified address and starting goroutines.
+// The trunk must be in Uninitialized state. Returns error if initialization fails.
 func (it *IAXTrunk) Init() error {
 	if it.State() != Uninitialized {
 		return ErrInvalidState
@@ -500,6 +523,8 @@ func (it *IAXTrunk) Init() error {
 
 // ShutDown shuts down the IAX trunk
 // It will hangup all calls and disconnect from the peers
+// ShutDown gracefully shuts down the IAX trunk.
+// It hangs up all active calls and disconnects from peers before killing the trunk.
 func (it *IAXTrunk) ShutDown() {
 	it.setState(ShutingDown)
 	for retry := 0; retry < 3; retry++ {
@@ -516,6 +541,8 @@ func (it *IAXTrunk) ShutDown() {
 }
 
 // Kill kills the IAX trunk without shutting down the calls
+// Kill immediately terminates the IAX trunk without graceful shutdown.
+// Closes the UDP connection and cancels all contexts.
 func (it *IAXTrunk) Kill() {
 	if it.State() != killed {
 		it.setState(killed)
@@ -531,6 +558,8 @@ func (it *IAXTrunk) Kill() {
 }
 
 // SendFrame sends a frame to the peer
+// SendFrame queues a frame for transmission to a peer.
+// The frame must have a valid peer address set.
 func (it *IAXTrunk) SendFrame(frame Frame) {
 	if it.State() != Uninitialized {
 		if it.logLevel > DisabledLogLevel {
@@ -545,6 +574,7 @@ func (it *IAXTrunk) SendFrame(frame Frame) {
 }
 
 // Options returns a copy of the IAX trunk options
+// Options returns a copy of the IAX trunk options.
 func (it *IAXTrunk) Options() *IAXTrunkOptions {
 	opts := *it.options
 	return &opts

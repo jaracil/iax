@@ -23,3 +23,6 @@ go.work
 # Local files
 local
 
+# Claude Code configuration
+CLAUDE.md
+

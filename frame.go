@@ -10,15 +10,20 @@ import (
 	"time"
 )
 
+// FrameType represents the type of an IAX2 frame
 type FrameType uint8
+
+// IEType represents the type of an Information Element within a frame
 type IEType uint8
+
+// Subclass represents the subclass of a frame, providing more specific type information
 type Subclass uint8
 
 const (
+	// FrameMaxSize defines the maximum size of an IAX2 frame in bytes
 	FrameMaxSize = 1024
 )
 
-// Frame types
 const (
 	FrmDTMFEnd      FrameType = 0x01
 	FrmVoice        FrameType = 0x02
@@ -34,7 +39,7 @@ const (
 	FrmDTMFBegin    FrameType = 0x0c
 )
 
-// FrameTypeToString returns the string representation of the FrameType
+// String returns the string representation of the FrameType.
 func (ft FrameType) String() string {
 	switch ft {
 	case FrmDTMFEnd:
@@ -66,10 +71,12 @@ func (ft FrameType) String() string {
 	}
 }
 
+// Codec represents an audio or video codec used in IAX2 communication
 type Codec uint8
+
+// CodecMask represents a bitmask of supported codecs
 type CodecMask uint64
 
-// Codecs
 const (
 	CODEC_G723      Codec = 0
 	CODEC_GSM       Codec = 1
@@ -165,7 +172,8 @@ func decodePrefCodec(s string) Codec {
 	return pereferredCodecs[i]
 }
 
-// EncodePreferredCodecs returns the string representation of the preferred codecs
+// EncodePreferredCodecs encodes a list of preferred codecs into a string format for IAX2 protocol.
+// The encoding uses character offsets from 'B' to represent codec preferences.
 func EncodePreferredCodecs(codecs []Codec) string {
 	res := ""
 	for _, c := range codecs {
@@ -174,7 +182,8 @@ func EncodePreferredCodecs(codecs []Codec) string {
 	return res
 }
 
-// DecodePreferredCodecs returns the preferred codecs from the string representation
+// DecodePreferredCodecs decodes a string of preferred codec preferences back into a slice of codecs.
+// Each character in the string represents a codec offset from 'B'.
 func DecodePreferredCodecs(s string) []Codec {
 	res := make([]Codec, 0, len(s))
 	for _, c := range s {
@@ -183,6 +192,8 @@ func DecodePreferredCodecs(s string) []Codec {
 	return res
 }
 
+// FrameSize returns the frame size in bytes for the codec.
+// Different codecs have different frame sizes based on their encoding characteristics.
 func (c Codec) FrameSize() int {
 	switch c {
 	case CODEC_SLIN:
@@ -204,12 +215,14 @@ func (c Codec) FrameSize() int {
 	}
 }
 
-// BitMask returns the bitmask for the codec
+// BitMask returns the bitmask representation of the codec.
+// This is used for codec capability negotiation in IAX2 protocol.
 func (c Codec) BitMask() CodecMask {
 	return 1 << c
 }
 
-// Subclass returns the subclass audio frame for the codec
+// Subclass returns the subclass value for audio frames using this codec.
+// The subclass encoding differs for codecs with high bit indices.
 func (c Codec) Subclass() Subclass {
 	mask := c.BitMask()
 	if mask < 0x80 {
@@ -218,7 +231,8 @@ func (c Codec) Subclass() Subclass {
 	return Subclass(0x80 + c)
 }
 
-// CodecFromSubclass returns the codec from the audio frame subclass
+// CodecFromSubclass extracts the codec from an audio frame subclass value.
+// This is the inverse operation of Codec.Subclass().
 func CodecFromSubclass(sc Subclass) Codec {
 	var msk CodecMask
 	if sc < 0x80 {
@@ -229,7 +243,7 @@ func CodecFromSubclass(sc Subclass) Codec {
 	return msk.FirstCodec()
 }
 
-// String returns the string representation of the codec
+// String returns the string representation of the codec.
 func (c Codec) String() string {
 	switch c {
 	case CODEC_G723:
@@ -295,22 +309,22 @@ func (c Codec) String() string {
 	}
 }
 
-// HasCodec checks if the CodecMask has the given codec
+// HasCodec checks if the codec mask includes support for the specified codec.
 func (cm CodecMask) HasCodec(c Codec) bool {
 	return cm&(1<<c) != 0
 }
 
-// AddCodec adds a codec to the CodecMask
+// AddCodec returns a new codec mask with the specified codec added.
 func (cm CodecMask) AddCodec(c Codec) CodecMask {
 	return cm | (1 << c)
 }
 
-// RemoveCodec removes a codec from the CodecMask
+// RemoveCodec returns a new codec mask with the specified codec removed.
 func (cm CodecMask) RemoveCodec(c Codec) CodecMask {
 	return cm &^ (1 << c)
 }
 
-// String returns the string representation of the CodecMask
+// String returns the string representation of the CodecMask.
 func (cm CodecMask) String() string {
 	res := ""
 	for c := 0; c < 64; c++ {
@@ -322,7 +336,8 @@ func (cm CodecMask) String() string {
 	return res
 }
 
-// String returns the string representation of the CodecMask
+// FirstCodec returns the first codec found in the mask, or CODEC_UNKNOWN if none.
+// This is useful for selecting a codec from a capability mask.
 func (cm CodecMask) FirstCodec() Codec {
 	for c := 0; c < 64; c++ {
 		codec := Codec(c)
@@ -333,7 +348,6 @@ func (cm CodecMask) FirstCodec() Codec {
 	return CODEC_UNKNOWN
 }
 
-// IE types
 const (
 	IECalledNumber    IEType = 1
 	IECallingNumber   IEType = 2
@@ -394,6 +408,7 @@ const (
 	IECallingANI2     IEType = 57
 )
 
+// String returns the string representation of the IEType.
 func (ie IEType) String() string {
 	switch ie {
 	case IECalledNumber:
@@ -515,7 +530,6 @@ func (ie IEType) String() string {
 	}
 }
 
-// Subclasses for IAXCtl frame
 const (
 	IAXCtlNew       Subclass = 0x01
 	IAXCtlPing      Subclass = 0x02
@@ -553,7 +567,6 @@ const (
 	IAXCtlCallToken Subclass = 0x28
 )
 
-// Subclasses for Control frames
 const (
 	CtlHangup     Subclass = 0x01
 	CtlRinging    Subclass = 0x03
@@ -570,7 +583,8 @@ const (
 	CtlUnhold     Subclass = 0x11
 )
 
-// SubclassToString returns the string representation of the Subclass
+// SubclassToString returns the string representation of a subclass for the given frame type.
+// The string representation depends on both the frame type and subclass value.
 func SubclassToString(ft FrameType, sc Subclass) string {
 	switch ft {
 	case FrmIAXCtl:
@@ -686,43 +700,43 @@ func SubclassToString(ft FrameType, sc Subclass) string {
 	}
 }
 
-// Information Element Frame
+// IEFrame represents an Information Element frame containing type and data
 type IEFrame struct {
 	ie   IEType
 	data []byte
 }
 
-// Uint32IE returns an IEFrame with the given IE and uint32 data
+// Uint32IE creates an IEFrame with the given IE type and uint32 data
 func Uint32IE(ie IEType, data uint32) *IEFrame {
 	return &IEFrame{ie, []byte{byte(data >> 24), byte(data >> 16), byte(data >> 8), byte(data)}}
 }
 
-// Uint16IE returns an IEFrame with the given IE and uint16 data
+// Uint16IE creates an IEFrame with the given IE type and uint16 data
 func Uint16IE(ie IEType, data uint16) *IEFrame {
 	return &IEFrame{ie, []byte{byte(data >> 8), byte(data)}}
 }
 
-// Uint8IE returns an IEFrame with the given IE and uint8 data
+// Uint8IE creates an IEFrame with the given IE type and uint8 data
 func Uint8IE(ie IEType, data uint8) *IEFrame {
 	return &IEFrame{ie, []byte{byte(data)}}
 }
 
-// StringIE returns an IEFrame with the given IE and string data
+// StringIE creates an IEFrame with the given IE type and string data
 func StringIE(ie IEType, data string) *IEFrame {
 	return &IEFrame{ie, []byte(data)}
 }
 
-// BytesIE returns an IEFrame with the given IE and data
+// BytesIE creates an IEFrame with the given IE type and byte slice data
 func BytesIE(ie IEType, data []byte) *IEFrame {
 	return &IEFrame{ie, data}
 }
 
-// IE returns the IE of the IEFrame
+// IE returns the Information Element type of the IEFrame
 func (ief *IEFrame) IE() IEType {
 	return ief.ie
 }
 
-// AsUint64 returns the IE data as uint64
+// AsUint64 interprets the IE data as a uint64 value
 func (ief *IEFrame) AsUint64() uint64 {
 	if ief == nil {
 		return 0
@@ -730,7 +744,7 @@ func (ief *IEFrame) AsUint64() uint64 {
 	return binary.BigEndian.Uint64(ief.data)
 }
 
-// AsUint32 returns the IE data as uint32
+// AsUint32 interprets the IE data as a uint32 value
 func (ief *IEFrame) AsUint32() uint32 {
 	if ief == nil {
 		return 0
@@ -738,7 +752,7 @@ func (ief *IEFrame) AsUint32() uint32 {
 	return binary.BigEndian.Uint32(ief.data)
 }
 
-// AsUint16 returns the IE data as uint16
+// AsUint16 interprets the IE data as a uint16 value
 func (ief *IEFrame) AsUint16() uint16 {
 	if ief == nil {
 		return 0
@@ -746,7 +760,7 @@ func (ief *IEFrame) AsUint16() uint16 {
 	return binary.BigEndian.Uint16(ief.data)
 }
 
-// AsUint8 returns the IE data as uint8
+// AsUint8 interprets the IE data as a uint8 value
 func (ief *IEFrame) AsUint8() uint8 {
 	if ief == nil {
 		return 0
@@ -754,7 +768,7 @@ func (ief *IEFrame) AsUint8() uint8 {
 	return uint8(ief.data[0])
 }
 
-// AsString returns the IE data as string
+// AsString interprets the IE data as a string
 func (ief *IEFrame) AsString() string {
 	if ief == nil {
 		return ""
@@ -762,7 +776,7 @@ func (ief *IEFrame) AsString() string {
 	return string(ief.data)
 }
 
-// AsBytes returns the IE data as []byte
+// AsBytes returns the raw IE data as a byte slice
 func (ief *IEFrame) AsBytes() []byte {
 	if ief == nil {
 		return nil
@@ -770,7 +784,7 @@ func (ief *IEFrame) AsBytes() []byte {
 	return ief.data
 }
 
-// Frame represents an IAX frame
+// Frame represents the common interface for all IAX2 frames (full and mini)
 type Frame interface {
 	Encode() []byte
 	SetSrcCallNumber(uint16)
@@ -790,7 +804,7 @@ type Frame interface {
 	String() string
 }
 
-// MiniFrame represents a mini IAX frame
+// MiniFrame represents an optimized IAX2 frame for media transmission
 type MiniFrame struct {
 	peerAddr         *net.UDPAddr
 	sourceCallNumber uint16
@@ -798,14 +812,14 @@ type MiniFrame struct {
 	payload          []byte
 }
 
-// NewMiniFrame returns a new MiniFrame
+// NewMiniFrame creates a new MiniFrame with the given payload
 func NewMiniFrame(payload []byte) *MiniFrame {
 	return &MiniFrame{
 		payload: payload,
 	}
 }
 
-// SetPeerAddr sets the peer address of the MiniFrame
+// SetPeerAddr sets the peer address for the MiniFrame
 func (f *MiniFrame) SetPeerAddr(addr *net.UDPAddr) {
 	f.peerAddr = addr
 }
@@ -815,6 +829,7 @@ func (f *MiniFrame) PeerAddr() *net.UDPAddr {
 	return f.peerAddr
 }
 
+// String returns the string representation of the MiniFrame
 func (f *MiniFrame) String() string {
 	res := fmt.Sprintf("MiniFrame: SrcCallNumber=%d, Timestamp=%d\n", f.SrcCallNumber(), f.Timestamp())
 	if len(f.Payload()) > 0 {
@@ -828,7 +843,7 @@ func (f *MiniFrame) SetSrcCallNumber(sourceCallNumber uint16) {
 	f.sourceCallNumber = sourceCallNumber
 }
 
-// srcCallNumber returns the source call number of the MiniFrame
+// SrcCallNumber returns the source call number of the MiniFrame
 func (f *MiniFrame) SrcCallNumber() uint16 {
 	return f.sourceCallNumber
 }
@@ -838,36 +853,37 @@ func (f *MiniFrame) SetDstCallNumber(destCallNumber uint16) {
 	// MiniFrame has no destination call number
 }
 
+// DstCallNumber returns the destination call number of the MiniFrame
 func (f *MiniFrame) DstCallNumber() uint16 {
 	return 0
 }
 
-// SetOSeqNo sets the OSeqno of the MiniFrame
+// SetOSeqNo sets the outbound sequence number of the MiniFrame
 func (f *MiniFrame) SetOSeqNo(oSeqno uint8) {
 	// MiniFrame has no OSeqno
 }
 
-// OSeqNo returns the OSeqNo of the MiniFrame
+// OSeqNo returns the outbound sequence number of the MiniFrame
 func (f *MiniFrame) OSeqNo() uint8 {
 	return 0
 }
 
-// SetISeqNo sets the ISeqno of the MiniFrame
+// SetISeqNo sets the inbound sequence number of the MiniFrame
 func (f *MiniFrame) SetISeqNo(iSeqno uint8) {
 	// MiniFrame has no ISeqno
 }
 
-// ISeqNo returns the ISeqNo of the MiniFrame
+// ISeqNo returns the inbound sequence number of the MiniFrame
 func (f *MiniFrame) ISeqNo() uint8 {
 	return 0
 }
 
-// IsFullFrame returns false for MiniFrame
+// IsFullFrame returns false for MiniFrame (it's not a full frame)
 func (f *MiniFrame) IsFullFrame() bool {
 	return false
 }
 
-// Payload returns the payload of the MiniFrame
+// Payload returns the payload data of the MiniFrame
 func (f *MiniFrame) Payload() []byte {
 	return f.payload
 }
@@ -882,7 +898,7 @@ func (f *MiniFrame) Timestamp() uint32 {
 	return uint32(f.timestamp)
 }
 
-// Encode returns the MiniFrame as byte slice
+// Encode serializes the MiniFrame into a byte slice for transmission
 func (f *MiniFrame) Encode() []byte {
 	frame := make([]byte, 4+len(f.payload))
 
@@ -896,7 +912,7 @@ func (f *MiniFrame) Encode() []byte {
 	return frame
 }
 
-// FullFrame represents a full IAX frame
+// FullFrame represents a complete IAX2 frame with full header and optional IEs
 type FullFrame struct {
 	peerAddr         *net.UDPAddr
 	retransmit       bool
@@ -911,7 +927,7 @@ type FullFrame struct {
 	payload          []byte
 }
 
-// NewFullFrame returns a new FullFrame
+// NewFullFrame creates a new FullFrame with the specified type and subclass
 func NewFullFrame(frameType FrameType, subclass Subclass) *FullFrame {
 	return &FullFrame{
 		frameType: frameType,
@@ -919,7 +935,7 @@ func NewFullFrame(frameType FrameType, subclass Subclass) *FullFrame {
 	}
 }
 
-// SetPeerAddr sets the peer address of the FullFrame
+// SetPeerAddr sets the peer address for the FullFrame
 func (f *FullFrame) SetPeerAddr(addr *net.UDPAddr) {
 	f.peerAddr = addr
 }
@@ -929,6 +945,7 @@ func (f *FullFrame) PeerAddr() *net.UDPAddr {
 	return f.peerAddr
 }
 
+// String returns the string representation of the FullFrame
 func (f *FullFrame) String() string {
 	res := fmt.Sprintf("FullFrame: Retry=%t, SrcCallNumber=%d, DstCallNumber=%d, Timestamp=%d, OSeqNo=%d, ISeqNo=%d, FrameType=%s, Subclass=%s\n", f.retransmit, f.sourceCallNumber, f.destCallNumber, f.timestamp, f.oSeqNo, f.iSeqNo, f.frameType.String(), SubclassToString(f.FrameType(), f.Subclass()))
 
@@ -946,27 +963,27 @@ func (f *FullFrame) IsFullFrame() bool {
 	return true
 }
 
-// AddIE adds an IE to the FullFrame
+// AddIE adds an Information Element to the FullFrame
 func (f *FullFrame) AddIE(ie *IEFrame) {
 	f.ies = append(f.ies, ie)
 }
 
-// SetPayload sets the payload of the FullFrame
+// SetPayload sets the payload data of the FullFrame
 func (f *FullFrame) SetPayload(payload []byte) {
 	f.payload = payload
 }
 
-// Payload returns the payload of the FullFrame
+// Payload returns the payload data of the FullFrame
 func (f *FullFrame) Payload() []byte {
 	return f.payload
 }
 
-// IEs returns the IEs of the FullFrame
+// IEs returns all Information Elements in the FullFrame
 func (f *FullFrame) IEs() []*IEFrame {
 	return f.ies
 }
 
-// FindIE returns the IEFrame with the given IEType
+// FindIE searches for and returns the first Information Element of the specified type
 func (f *FullFrame) FindIE(ie IEType) *IEFrame {
 	for _, ief := range f.ies {
 		if ief.ie == ie {
@@ -976,12 +993,12 @@ func (f *FullFrame) FindIE(ie IEType) *IEFrame {
 	return nil
 }
 
-// SetRetransmit sets the retransmit flag of the FullFrame
+// SetRetransmit sets the retransmission flag of the FullFrame
 func (f *FullFrame) SetRetransmit(retransmit bool) {
 	f.retransmit = retransmit
 }
 
-// Retransmit returns the retransmit flag of the FullFrame
+// Retransmit returns the retransmission flag of the FullFrame
 func (f *FullFrame) Retransmit() bool {
 	return f.retransmit
 }
@@ -991,7 +1008,7 @@ func (f *FullFrame) SetSrcCallNumber(sourceCallNumber uint16) {
 	f.sourceCallNumber = sourceCallNumber
 }
 
-// SourceCallNumber returns the source call number of the FullFrame
+// SrcCallNumber returns the source call number of the FullFrame
 func (f *FullFrame) SrcCallNumber() uint16 {
 	return f.sourceCallNumber
 }
@@ -1001,7 +1018,7 @@ func (f *FullFrame) SetDstCallNumber(destCallNumber uint16) {
 	f.destCallNumber = destCallNumber
 }
 
-// DestCallNumber returns the destination call number of the FullFrame
+// DstCallNumber returns the destination call number of the FullFrame
 func (f *FullFrame) DstCallNumber() uint16 {
 	return f.destCallNumber
 }
@@ -1016,37 +1033,37 @@ func (f *FullFrame) Timestamp() uint32 {
 	return f.timestamp
 }
 
-// SetOSeqNo sets the OSeqno of the FullFrame
+// SetOSeqNo sets the outbound sequence number of the FullFrame
 func (f *FullFrame) SetOSeqNo(oSeqno uint8) {
 	f.oSeqNo = oSeqno
 }
 
-// OSeqNo returns the OSeqNo of the FullFrame
+// OSeqNo returns the outbound sequence number of the FullFrame
 func (f *FullFrame) OSeqNo() uint8 {
 	return f.oSeqNo
 }
 
-// SetISeqNo sets the ISeqno of the FullFrame
+// SetISeqNo sets the inbound sequence number of the FullFrame
 func (f *FullFrame) SetISeqNo(iSeqno uint8) {
 	f.iSeqNo = iSeqno
 }
 
-// ISeqNo returns the ISeqNo of the FullFrame
+// ISeqNo returns the inbound sequence number of the FullFrame
 func (f *FullFrame) ISeqNo() uint8 {
 	return f.iSeqNo
 }
 
-// FrameType returns the FrameType of the FullFrame
+// FrameType returns the frame type of the FullFrame
 func (f *FullFrame) FrameType() FrameType {
 	return f.frameType
 }
 
-// Subclass returns the Subclass of the FullFrame
+// Subclass returns the subclass of the FullFrame
 func (f *FullFrame) Subclass() Subclass {
 	return f.subclass
 }
 
-// Encode returns the FullFrame as byte slice
+// Encode serializes the FullFrame into a byte slice for transmission
 func (f *FullFrame) Encode() []byte {
 
 	iesSize := 0
@@ -1083,12 +1100,12 @@ func (f *FullFrame) Encode() []byte {
 	return frame
 }
 
-// Check if this is a full frame
+// IsFullFrame determines if a raw frame is a full frame by checking the high bit
 func IsFullFrame(frame []byte) bool {
 	return frame[0]&0x80 == 0x80
 }
 
-// Check if frame is a response to a previous frame
+// IsResponse determines if the frame is a response to a previous frame
 func (f *FullFrame) IsResponse() bool {
 	switch f.frameType {
 	case FrmIAXCtl:
@@ -1100,7 +1117,7 @@ func (f *FullFrame) IsResponse() bool {
 	return false
 }
 
-// Check if frame needs an ACK
+// NeedACK determines if the frame requires an acknowledgment
 func (f *FullFrame) NeedACK() bool {
 	switch f.frameType {
 	case FrmIAXCtl:
@@ -1117,6 +1134,7 @@ func (f *FullFrame) NeedACK() bool {
 	return false
 }
 
+// NeedResponse determines if the frame expects a response
 func (f *FullFrame) NeedResponse() bool {
 	switch f.frameType {
 	case FrmIAXCtl:
@@ -1128,7 +1146,7 @@ func (f *FullFrame) NeedResponse() bool {
 	return false
 }
 
-// DecodeFrame decodes a byte slice to a FullFrame
+// DecodeFrame decodes raw frame bytes into either a FullFrame or MiniFrame
 func DecodeFrame(frame []byte) (Frame, error) {
 
 	if IsFullFrame(frame) {
@@ -1188,6 +1206,7 @@ func DecodeFrame(frame []byte) (Frame, error) {
 	}
 }
 
+// IaxTimeToTime converts IAX2 time format to Go time.Time
 func IaxTimeToTime(t uint32) time.Time {
 	sec := (t & 0x1f) * 2
 	min := (t >> 5) & 0x3f
@@ -1198,6 +1217,7 @@ func IaxTimeToTime(t uint32) time.Time {
 	return time.Date(int(year)+2000, time.Month(month), int(day), int(hour), int(min), int(sec), 0, time.UTC)
 }
 
+// TimeToIaxTime converts Go time.Time to IAX2 time format
 func TimeToIaxTime(t time.Time) uint32 {
 	t = t.UTC()
 	year := uint32(t.Year() - 2000)

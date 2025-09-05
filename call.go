@@ -214,6 +214,8 @@ type Call struct {
 	peerAddr      *net.UDPAddr
 }
 
+// NewCall creates a new call instance associated with the given IAX trunk.
+// Returns a new Call with initialized channels and goroutines for handling IAX2 protocol frames.
 func NewCall(it *IAXTrunk) *Call {
 	evtQueueSize := it.options.CallEvtQueueSize
 	if evtQueueSize == 0 {
@@ -321,6 +323,9 @@ func (c *Call) tickerLoop() {
 	}
 }
 
+// PlayMedia plays audio media from the provided io.Reader to the remote peer.
+// The media is read in frames of the accepted codec size and transmitted as IAX2 voice frames.
+// Returns ErrResourceBusy if media is already playing, or other errors on failure.
 func (c *Call) PlayMedia(r io.Reader) error {
 	c.log(DebugLogLevel, "Playing media with codec %s frame size: %d", c.acceptCodec, c.acceptCodec.FrameSize())
 	c.raceLock.Lock()
@@ -368,6 +373,8 @@ func (c *Call) PlayMedia(r io.Reader) error {
 	return nil
 }
 
+// StopMedia stops any currently playing media.
+// This method is safe to call even if no media is currently playing.
 func (c *Call) StopMedia() {
 	c.raceLock.Lock()
 	if c.mediaPlaying {
@@ -376,6 +383,9 @@ func (c *Call) StopMedia() {
 	c.raceLock.Unlock()
 }
 
+// SendMedia sends a single media event (audio data) to the remote peer.
+// Returns ErrInvalidState if the call is not in Online or Accept state,
+// ErrFullBuffer if the media queue is full, or other errors on failure.
 func (c *Call) SendMedia(ev *MediaEvent) error {
 	if c.State() != OnlineCallState && c.State() != AcceptCallState {
 		return ErrInvalidState
@@ -648,6 +658,9 @@ func (c *Call) processAuthReq(frame *FullFrame) error {
 	}
 }
 
+// Dial initiates an outgoing call to the specified peer user.
+// The call progresses through authentication, codec negotiation, and call establishment.
+// Returns error if the call fails to establish or if the peer is not found.
 func (c *Call) Dial(peerUsr string, opts *DialOptions) error {
 	if c.State() != IdleCallState {
 		return c.kill(ErrInvalidState)
@@ -951,6 +964,7 @@ func (c *Call) waitResponse(timeout time.Duration) (*FullFrame, error) {
 	}
 }
 
+// IAXTrunk returns the IAX trunk associated with this call.
 func (c *Call) IAXTrunk() *IAXTrunk {
 	return c.iaxTrunk
 }
@@ -1099,6 +1113,9 @@ func (c *Call) KillCauseErr() error {
 }
 
 // Accept accepts the call.
+// Accept accepts an incoming call with the specified codec.
+// Performs authentication if required and establishes the media format.
+// Returns error if the call is not in incoming state or authentication fails.
 func (c *Call) Accept(codec Codec) error {
 	if c.State() == IncomingCallState {
 		if c.peer.Password != "" {
@@ -1144,6 +1161,9 @@ func (c *Call) Accept(codec Codec) error {
 }
 
 // Reject rejects the call.
+// Reject rejects an incoming call with the specified cause and code.
+// The call must be in incoming state to be rejected.
+// Returns error if the call cannot be rejected or if sending the rejection fails.
 func (c *Call) Reject(cause string, code uint8) error {
 	if c.State() == IncomingCallState {
 		frame := NewFullFrame(FrmIAXCtl, IAXCtlReject)
@@ -1174,6 +1194,9 @@ func (c *Call) kill(err error) error {
 }
 
 // Hangup hangs up the call and frees resources.
+// Hangup terminates the call with the specified cause and code.
+// Sends a hangup frame to the remote peer and frees call resources.
+// Can be called from any call state except already hung up calls.
 func (c *Call) Hangup(cause string, code uint8) error {
 	if c.State() != HangupCallState {
 		if c.State() != IdleCallState {
@@ -1195,6 +1218,9 @@ func (c *Call) Hangup(cause string, code uint8) error {
 
 // SendRinging sends a ringing signal to the peer.
 // Call must be incomming and in AcceptCallState.
+// SendRinging sends a ringing control signal to the remote peer.
+// Call must be an incoming call in Accept state.
+// Returns error if the call is in an invalid state for ringing.
 func (c *Call) SendRinging() error {
 	if c.State() == AcceptCallState && !c.outgoing {
 		frame := NewFullFrame(FrmControl, CtlRinging)
@@ -1210,6 +1236,9 @@ func (c *Call) SendRinging() error {
 
 // SendProceeding sends a proceeding signal to the peer.
 // Call must be incomming and in AcceptCallState.
+// SendProceeding sends a call proceeding control signal to the remote peer.
+// Call must be an incoming call in Accept state.
+// Returns error if the call is in an invalid state for proceeding.
 func (c *Call) SendProceeding() error {
 	if c.State() == AcceptCallState && !c.outgoing {
 		frame := NewFullFrame(FrmControl, CtlProceeding)
@@ -1225,6 +1254,9 @@ func (c *Call) SendProceeding() error {
 
 // Answer answers the call.
 // Call must be incomming and in AcceptCallState.
+// Answer answers an incoming call and transitions to Online state.
+// Call must be an incoming call in Accept state.
+// Returns error if the call is in an invalid state for answering.
 func (c *Call) Answer() error {
 	if c.State() == AcceptCallState && !c.outgoing {
 		frame := NewFullFrame(FrmControl, CtlAnswer)
@@ -1241,6 +1273,9 @@ func (c *Call) Answer() error {
 
 // SendPing sends a ping to the peer.
 // returns pong frame or error.
+// SendPing sends a ping frame to the remote peer and waits for a pong response.
+// Returns the pong frame on success or error on failure/timeout.
+// Useful for testing connectivity and measuring round-trip time.
 func (c *Call) SendPing() (*FullFrame, error) {
 	frame := NewFullFrame(FrmIAXCtl, IAXCtlPing)
 	rFrm, err := c.sendFullFrame(frame)
@@ -1252,6 +1287,9 @@ func (c *Call) SendPing() (*FullFrame, error) {
 
 // SendLagRqst sends a lag request to the peer.
 // returns the lag time or error.
+// SendLagRqst sends a lag request to the remote peer and measures the response time.
+// Returns the calculated lag duration or error on failure.
+// The lag is calculated from the time the request was sent to when the reply was received.
 func (c *Call) SendLagRqst() (time.Duration, error) {
 	frame := NewFullFrame(FrmIAXCtl, IAXCtlLagRqst)
 	rFrm, err := c.sendFullFrame(frame)
@@ -1270,6 +1308,10 @@ func (c *Call) SendLagRqst() (time.Duration, error) {
 // if dur is negative, the digit is sent as a system default duration tone.
 // tones are sent sequentially with a gap of gap milliseconds.
 // Call state must be in OnlineCallState.
+// SendDTMF sends DTMF (touch-tone) digits to the remote peer.
+// dur is the duration of each digit in milliseconds (default 150ms if 0, system default if negative).
+// gap is the pause between digits in milliseconds (default 50ms if 0 or negative).
+// Call must be in Online state. Returns error on failure or invalid state.
 func (c *Call) SendDTMF(digits string, dur, gap int) error {
 	if dur == 0 {
 		dur = 150
