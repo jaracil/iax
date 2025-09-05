@@ -2,6 +2,8 @@
 
 A Go implementation of the IAX2 (Inter-Asterisk eXchange version 2) protocol for VoIP communications. This library provides a complete client implementation for connecting to Asterisk servers and managing voice calls.
 
+**Documentation:** https://pkg.go.dev/github.com/jaracil/iax
+
 ## Features
 
 - **Full IAX2 Protocol Support**: Complete implementation of call control, registration, and media handling
